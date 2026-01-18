@@ -99,16 +99,22 @@ async def send_message(
         data.type,
     )
 
+    message_data = {
+        "id": str(message.id),
+        "sender_id": message.sender_id,
+        "content": message.content,
+        "type": message.type.value,
+        "timestamp": message.timestamp.isoformat(),
+        "status": message.status.value,
+    }
+
+    # Notify recipient via WebSocket
+    from app.chat.websocket import notify_new_message
+    await notify_new_message(conversation_id, message_data, str(current_user.id))
+
     return {
         "success": True,
-        "data": {
-            "id": str(message.id),
-            "sender_id": message.sender_id,
-            "content": message.content,
-            "type": message.type.value,
-            "timestamp": message.timestamp.isoformat(),
-            "status": message.status.value,
-        },
+        "data": message_data,
     }
 
 
@@ -132,16 +138,23 @@ async def send_image_message(
         image_url=image_url,
     )
 
+    message_data = {
+        "id": str(message.id),
+        "sender_id": message.sender_id,
+        "content": message.content,
+        "image_url": message.image_url,
+        "type": message.type.value,
+        "timestamp": message.timestamp.isoformat(),
+        "status": message.status.value,
+    }
+
+    # Notify recipient via WebSocket
+    from app.chat.websocket import notify_new_message
+    await notify_new_message(conversation_id, message_data, str(current_user.id))
+
     return {
         "success": True,
-        "data": {
-            "id": str(message.id),
-            "sender_id": message.sender_id,
-            "content": message.content,
-            "type": message.type.value,
-            "timestamp": message.timestamp.isoformat(),
-            "status": message.status.value,
-        },
+        "data": message_data,
     }
 
 

@@ -332,7 +332,7 @@ async def like_user(
 
     if match:
         matched_user = await User.get(data.user_id)
-        response["data"]["match"] = {
+        match_data = {
             "id": str(match.id),
             "user": {
                 "id": data.user_id,
@@ -341,6 +341,18 @@ async def like_user(
             },
             "matched_at": match.matched_at.isoformat(),
         }
+        response["data"]["match"] = match_data
+
+        # Notify the other user about the match via WebSocket
+        from app.chat.websocket import notify_new_match
+        await notify_new_match(data.user_id, {
+            "match": match_data,
+            "user": {
+                "id": str(current_user.id),
+                "name": current_user.name,
+                "photos": [p.url for p in current_user.photos],
+            },
+        })
 
     return response
 
@@ -377,7 +389,7 @@ async def super_like_user(
 
     if match:
         matched_user = await User.get(data.user_id)
-        response["data"]["match"] = {
+        match_data = {
             "id": str(match.id),
             "user": {
                 "id": data.user_id,
@@ -386,6 +398,18 @@ async def super_like_user(
             },
             "matched_at": match.matched_at.isoformat(),
         }
+        response["data"]["match"] = match_data
+
+        # Notify the other user about the match via WebSocket
+        from app.chat.websocket import notify_new_match
+        await notify_new_match(data.user_id, {
+            "match": match_data,
+            "user": {
+                "id": str(current_user.id),
+                "name": current_user.name,
+                "photos": [p.url for p in current_user.photos],
+            },
+        })
 
     return response
 
