@@ -24,6 +24,7 @@ async def connect_to_mongo():
     from app.models.report import Report
     from app.models.device import Device
     from app.models.refresh_token import RefreshToken
+    from app.models.sticker import Sticker, StickerPack, UserStickerPack, RecentSticker
 
     await init_beanie(
         database=db.client[settings.MONGODB_DB_NAME],
@@ -37,6 +38,10 @@ async def connect_to_mongo():
             Report,
             Device,
             RefreshToken,
+            Sticker,
+            StickerPack,
+            UserStickerPack,
+            RecentSticker,
         ],
     )
 

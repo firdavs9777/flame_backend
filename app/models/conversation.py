@@ -1,7 +1,15 @@
 from beanie import Document, Indexed
-from pydantic import Field
-from typing import Optional, Annotated
+from pydantic import BaseModel, Field
+from typing import Optional, Annotated, List
 from datetime import datetime, timezone
+
+
+class PinnedMessage(BaseModel):
+    """Info about a pinned message."""
+    message_id: str
+    content: str  # Preview content
+    pinned_by: str  # User ID who pinned
+    pinned_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class Conversation(Document):
@@ -18,6 +26,13 @@ class Conversation(Document):
     # Unread counts
     user1_unread_count: int = 0
     user2_unread_count: int = 0
+
+    # Pinned messages (can have multiple like Telegram)
+    pinned_messages: List[PinnedMessage] = Field(default_factory=list)
+
+    # Mute settings per user
+    user1_muted_until: Optional[datetime] = None
+    user2_muted_until: Optional[datetime] = None
 
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

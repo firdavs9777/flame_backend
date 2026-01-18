@@ -937,61 +937,387 @@ Content-Type: application/json
 
 ---
 
-# WebSocket (Real-time)
+# WebSocket (Real-time Chat)
 
-## Connection
+**IMPORTANT:** WebSocket connection is required for real-time messaging.
 
-```javascript
-const ws = new WebSocket('wss://flame.banatalk.com/ws?token=<access_token>');
+## Connection URL
+
+```
+wss://flame.banatalk.com/ws?token=<access_token>
 ```
 
-## Events to Send
+## Complete React Native Implementation
 
 ```javascript
-// Ping (keep alive)
-ws.send(JSON.stringify({ event: 'ping' }));
+// websocket.js
+import { useEffect, useRef, useState } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// Typing indicator
-ws.send(JSON.stringify({
-  event: 'typing',
-  data: { conversation_id: 'conv_123' }
-}));
-
-// Stop typing
-ws.send(JSON.stringify({
-  event: 'stop_typing',
-  data: { conversation_id: 'conv_123' }
-}));
-```
-
-## Events to Listen
-
-```javascript
-ws.onmessage = (event) => {
-  const { event: eventName, data } = JSON.parse(event.data);
-
-  switch(eventName) {
-    case 'new_message':
-      // New message received
-      // data: { message: {...}, conversation_id: '...' }
-      break;
-    case 'new_match':
-      // New match! Show animation
-      // data: { match: {...}, user: {...} }
-      break;
-    case 'user_typing':
-      // Show typing indicator
-      // data: { conversation_id: '...', user_id: '...' }
-      break;
-    case 'user_stopped_typing':
-      // Hide typing indicator
-      break;
-    case 'message_read':
-      // Update message status
-      // data: { conversation_id: '...', message_ids: [...] }
-      break;
+class WebSocketService {
+  constructor() {
+    this.ws = null;
+    this.listeners = {};
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
   }
-};
+
+  async connect() {
+    const token = await AsyncStorage.getItem('access_token');
+    if (!token) return;
+
+    this.ws = new WebSocket(`wss://flame.banatalk.com/ws?token=${token}`);
+
+    this.ws.onopen = () => {
+      console.log('WebSocket connected');
+      this.reconnectAttempts = 0;
+      this.startPing();
+    };
+
+    this.ws.onmessage = (event) => {
+      const { event: eventName, data } = JSON.parse(event.data);
+      this.emit(eventName, data);
+    };
+
+    this.ws.onclose = () => {
+      console.log('WebSocket disconnected');
+      this.stopPing();
+      this.attemptReconnect();
+    };
+
+    this.ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+  }
+
+  startPing() {
+    this.pingInterval = setInterval(() => {
+      this.send('ping', {});
+    }, 30000); // Ping every 30 seconds
+  }
+
+  stopPing() {
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+    }
+  }
+
+  attemptReconnect() {
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++;
+      setTimeout(() => this.connect(), 2000 * this.reconnectAttempts);
+    }
+  }
+
+  send(event, data) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ event, data }));
+    }
+  }
+
+  on(event, callback) {
+    if (!this.listeners[event]) {
+      this.listeners[event] = [];
+    }
+    this.listeners[event].push(callback);
+  }
+
+  off(event, callback) {
+    if (this.listeners[event]) {
+      this.listeners[event] = this.listeners[event].filter(cb => cb !== callback);
+    }
+  }
+
+  emit(event, data) {
+    if (this.listeners[event]) {
+      this.listeners[event].forEach(callback => callback(data));
+    }
+  }
+
+  disconnect() {
+    this.stopPing();
+    if (this.ws) {
+      this.ws.close();
+    }
+  }
+}
+
+export const wsService = new WebSocketService();
+```
+
+## Events to Send (Client → Server)
+
+| Event | Data | Description |
+|-------|------|-------------|
+| `ping` | `{}` | Keep connection alive |
+| `typing` | `{ conversation_id }` | User started typing |
+| `stop_typing` | `{ conversation_id }` | User stopped typing |
+| `message_read` | `{ conversation_id, message_ids }` | Mark messages as read |
+
+```javascript
+// Send typing indicator
+wsService.send('typing', { conversation_id: 'conv_123' });
+
+// Send stop typing
+wsService.send('stop_typing', { conversation_id: 'conv_123' });
+
+// Mark messages as read
+wsService.send('message_read', {
+  conversation_id: 'conv_123',
+  message_ids: ['msg_1', 'msg_2']
+});
+```
+
+## Events to Listen (Server → Client)
+
+### 1. `new_message` - New Message Received
+
+```javascript
+wsService.on('new_message', (data) => {
+  // data structure:
+  {
+    "conversation_id": "conv_123",
+    "message": {
+      "id": "msg_abc",
+      "sender_id": "user_xyz",
+      "content": "Hello!",
+      "type": "text",
+      "timestamp": "2024-01-15T10:30:00Z",
+      "status": "sent"
+    }
+  }
+
+  // Add message to chat screen
+  addMessageToConversation(data.conversation_id, data.message);
+
+  // Show notification if not on chat screen
+  if (currentScreen !== 'chat') {
+    showPushNotification(data.message);
+  }
+});
+```
+
+### 2. `new_match` - It's a Match!
+
+```javascript
+wsService.on('new_match', (data) => {
+  // data structure:
+  {
+    "match": {
+      "id": "match_123",
+      "user": {
+        "id": "user_abc",
+        "name": "Jane",
+        "photos": ["https://..."]
+      },
+      "matched_at": "2024-01-15T10:30:00Z"
+    },
+    "user": {
+      "id": "user_abc",
+      "name": "Jane",
+      "photos": ["https://..."]
+    }
+  }
+
+  // Show match animation/popup
+  showMatchAnimation(data.user);
+
+  // Refresh matches list
+  refreshMatches();
+});
+```
+
+### 3. `user_typing` - User is Typing
+
+```javascript
+wsService.on('user_typing', (data) => {
+  // data structure:
+  {
+    "conversation_id": "conv_123",
+    "user_id": "user_xyz"
+  }
+
+  // Show typing indicator in chat
+  showTypingIndicator(data.conversation_id);
+});
+```
+
+### 4. `user_stop_typing` - User Stopped Typing
+
+```javascript
+wsService.on('user_stop_typing', (data) => {
+  // data structure:
+  {
+    "conversation_id": "conv_123",
+    "user_id": "user_xyz"
+  }
+
+  // Hide typing indicator
+  hideTypingIndicator(data.conversation_id);
+});
+```
+
+### 5. `message_status` - Message Status Updated
+
+```javascript
+wsService.on('message_status', (data) => {
+  // data structure:
+  {
+    "conversation_id": "conv_123",
+    "message_ids": ["msg_1", "msg_2"],
+    "status": "read"
+  }
+
+  // Update message status (show read receipts)
+  updateMessageStatus(data.message_ids, data.status);
+});
+```
+
+### 6. `user_online` / `user_offline` - User Status Changed
+
+```javascript
+wsService.on('user_online', (data) => {
+  // data: { user_id: "..." }
+  updateUserOnlineStatus(data.user_id, true);
+});
+
+wsService.on('user_offline', (data) => {
+  // data: { user_id: "..." }
+  updateUserOnlineStatus(data.user_id, false);
+});
+```
+
+### 7. `pong` - Response to Ping
+
+```javascript
+wsService.on('pong', () => {
+  // Connection is alive
+});
+```
+
+## Usage in React Native Screens
+
+### Chat Screen
+
+```javascript
+import { useEffect, useState } from 'react';
+import { wsService } from './websocket';
+
+function ChatScreen({ conversationId }) {
+  const [messages, setMessages] = useState([]);
+  const [isTyping, setIsTyping] = useState(false);
+
+  useEffect(() => {
+    // Listen for new messages
+    const handleNewMessage = (data) => {
+      if (data.conversation_id === conversationId) {
+        setMessages(prev => [...prev, data.message]);
+      }
+    };
+
+    // Listen for typing
+    const handleTyping = (data) => {
+      if (data.conversation_id === conversationId) {
+        setIsTyping(true);
+      }
+    };
+
+    const handleStopTyping = (data) => {
+      if (data.conversation_id === conversationId) {
+        setIsTyping(false);
+      }
+    };
+
+    wsService.on('new_message', handleNewMessage);
+    wsService.on('user_typing', handleTyping);
+    wsService.on('user_stop_typing', handleStopTyping);
+
+    return () => {
+      wsService.off('new_message', handleNewMessage);
+      wsService.off('user_typing', handleTyping);
+      wsService.off('user_stop_typing', handleStopTyping);
+    };
+  }, [conversationId]);
+
+  const sendTypingIndicator = () => {
+    wsService.send('typing', { conversation_id: conversationId });
+  };
+
+  const sendStopTyping = () => {
+    wsService.send('stop_typing', { conversation_id: conversationId });
+  };
+
+  return (
+    // Your chat UI
+  );
+}
+```
+
+### App Root (Connect on Login)
+
+```javascript
+import { useEffect } from 'react';
+import { wsService } from './websocket';
+
+function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false);
+
+  useEffect(() => {
+    if (isLoggedIn) {
+      // Connect WebSocket after login
+      wsService.connect();
+
+      // Listen for matches globally
+      wsService.on('new_match', (data) => {
+        showMatchPopup(data);
+      });
+    }
+
+    return () => {
+      wsService.disconnect();
+    };
+  }, [isLoggedIn]);
+
+  return (
+    // Your app navigation
+  );
+}
+```
+
+## Connection Lifecycle
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    App Lifecycle                         │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  User Login                                              │
+│      │                                                   │
+│      ▼                                                   │
+│  ┌──────────────────┐                                   │
+│  │ wsService.connect()                                  │
+│  └──────────────────┘                                   │
+│      │                                                   │
+│      ▼                                                   │
+│  ┌──────────────────┐    ┌─────────────────────┐        │
+│  │  Connected       │───►│ Ping every 30s      │        │
+│  └──────────────────┘    └─────────────────────┘        │
+│      │                                                   │
+│      │ (If disconnected)                                │
+│      ▼                                                   │
+│  ┌──────────────────┐                                   │
+│  │ Auto-reconnect   │ (up to 5 attempts)                │
+│  └──────────────────┘                                   │
+│      │                                                   │
+│      ▼                                                   │
+│  User Logout                                             │
+│      │                                                   │
+│      ▼                                                   │
+│  ┌──────────────────┐                                   │
+│  │ wsService.disconnect()                               │
+│  └──────────────────┘                                   │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
 ```
 
 ---

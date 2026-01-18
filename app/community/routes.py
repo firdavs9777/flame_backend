@@ -343,6 +343,11 @@ async def like_user(
         }
         response["data"]["match"] = match_data
 
+        # Get the conversation for this match
+        from app.models.conversation import Conversation
+        conversation = await Conversation.find_one({"match_id": str(match.id)})
+        conversation_id = str(conversation.id) if conversation else None
+
         # Notify the other user about the match via WebSocket
         from app.chat.websocket import notify_new_match
         await notify_new_match(data.user_id, {
@@ -352,7 +357,8 @@ async def like_user(
                 "name": current_user.name,
                 "photos": [p.url for p in current_user.photos],
             },
-        })
+            "conversation_id": conversation_id,
+        }, conversation_id=conversation_id)
 
     return response
 
@@ -400,6 +406,11 @@ async def super_like_user(
         }
         response["data"]["match"] = match_data
 
+        # Get the conversation for this match
+        from app.models.conversation import Conversation
+        conversation = await Conversation.find_one({"match_id": str(match.id)})
+        conversation_id = str(conversation.id) if conversation else None
+
         # Notify the other user about the match via WebSocket
         from app.chat.websocket import notify_new_match
         await notify_new_match(data.user_id, {
@@ -409,7 +420,8 @@ async def super_like_user(
                 "name": current_user.name,
                 "photos": [p.url for p in current_user.photos],
             },
-        })
+            "conversation_id": conversation_id,
+        }, conversation_id=conversation_id)
 
     return response
 

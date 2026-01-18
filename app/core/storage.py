@@ -118,7 +118,43 @@ class StorageService:
         """Upload a message image."""
         ext = file.filename.split(".")[-1] if file.filename else "jpg"
         filename = f"{conversation_id}-{uuid.uuid4()}.{ext}"
-        return await self.upload_file(file, folder="messages", filename=filename)
+        return await self.upload_file(file, folder="messages/images", filename=filename)
+
+    async def upload_message_video(self, conversation_id: str, file: UploadFile) -> str:
+        """Upload a message video."""
+        ext = file.filename.split(".")[-1] if file.filename else "mp4"
+        filename = f"{conversation_id}-{uuid.uuid4()}.{ext}"
+        return await self.upload_file(file, folder="messages/videos", filename=filename)
+
+    async def upload_message_audio(self, conversation_id: str, file: UploadFile) -> str:
+        """Upload a message audio file."""
+        ext = file.filename.split(".")[-1] if file.filename else "mp3"
+        filename = f"{conversation_id}-{uuid.uuid4()}.{ext}"
+        return await self.upload_file(file, folder="messages/audio", filename=filename)
+
+    async def upload_voice_message(self, conversation_id: str, file: UploadFile) -> str:
+        """Upload a voice message."""
+        ext = file.filename.split(".")[-1] if file.filename else "ogg"
+        filename = f"{conversation_id}-{uuid.uuid4()}.{ext}"
+        return await self.upload_file(file, folder="messages/voice", filename=filename)
+
+    async def upload_message_file(self, conversation_id: str, file: UploadFile) -> str:
+        """Upload a generic file attachment."""
+        ext = file.filename.split(".")[-1] if file.filename else "bin"
+        filename = f"{conversation_id}-{uuid.uuid4()}.{ext}"
+        return await self.upload_file(file, folder="messages/files", filename=filename)
+
+    async def upload_video_thumbnail(self, conversation_id: str, file: UploadFile) -> str:
+        """Upload a video thumbnail."""
+        ext = file.filename.split(".")[-1] if file.filename else "jpg"
+        filename = f"{conversation_id}-thumb-{uuid.uuid4()}.{ext}"
+        return await self.upload_file(file, folder="messages/thumbnails", filename=filename)
+
+    async def upload_sticker(self, pack_id: str, file: UploadFile) -> str:
+        """Upload a sticker image."""
+        ext = file.filename.split(".")[-1] if file.filename else "webp"
+        filename = f"{pack_id}-{uuid.uuid4()}.{ext}"
+        return await self.upload_file(file, folder="stickers", filename=filename)
 
     async def upload_base64_image(self, base64_string: str, user_id: str) -> str:
         """

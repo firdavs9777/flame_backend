@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 from app.auth.routes import router as auth_router
 from app.community.routes import router as community_router
-from app.chat.routes import router as chat_router
+from app.chat.routes import router as chat_router, sticker_router
 from app.chat.websocket import router as ws_router
 
 
@@ -99,6 +99,7 @@ async def health_check():
 app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
 app.include_router(community_router, prefix=settings.API_V1_PREFIX)
 app.include_router(chat_router, prefix=settings.API_V1_PREFIX)
+app.include_router(sticker_router, prefix=settings.API_V1_PREFIX)
 app.include_router(ws_router)
 
 
