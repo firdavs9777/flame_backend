@@ -20,6 +20,17 @@ class StorageService:
         )
         self.bucket = settings.SPACES_BUCKET
         self.cdn_url = settings.SPACES_CDN_URL
+        self.project_folder = settings.SPACES_PROJECT_FOLDER
+        self.bucket_url = f"https://{settings.SPACES_BUCKET}.{settings.SPACES_ENDPOINT}"
+
+    def _build_key(self, folder: str, filename: str) -> str:
+        """Build the full S3 key with project folder prefix."""
+        timestamp = int(datetime.utcnow().timestamp() * 1000)
+        return f"{self.project_folder}/{folder}/{timestamp}-{filename}"
+
+    def _fix_url(self, key: str) -> str:
+        """Ensure URL is properly formatted with CDN."""
+        return f"{self.cdn_url}/{key}"
 
     async def upload_file(
         self,
@@ -35,9 +46,8 @@ class StorageService:
             ext = file.filename.split(".")[-1] if file.filename else "jpg"
             filename = f"{uuid.uuid4()}.{ext}"
 
-        # Create path with date organization
-        date_path = datetime.utcnow().strftime("%Y/%m/%d")
-        key = f"{folder}/{date_path}/{filename}"
+        # Build key with project folder prefix
+        key = self._build_key(folder, filename)
 
         # Read file content
         content = await file.read()
@@ -54,7 +64,7 @@ class StorageService:
         # Reset file position
         await file.seek(0)
 
-        return f"{self.cdn_url}/{key}"
+        return self._fix_url(key)
 
     async def upload_bytes(
         self,
@@ -67,8 +77,8 @@ class StorageService:
         Upload raw bytes to DigitalOcean Spaces.
         Returns the CDN URL of the uploaded file.
         """
-        date_path = datetime.utcnow().strftime("%Y/%m/%d")
-        key = f"{folder}/{date_path}/{filename}"
+        # Build key with project folder prefix
+        key = self._build_key(folder, filename)
 
         self.client.put_object(
             Bucket=self.bucket,
@@ -78,7 +88,7 @@ class StorageService:
             ACL="public-read",
         )
 
-        return f"{self.cdn_url}/{key}"
+        return self._fix_url(key)
 
     async def delete_file(self, url: str) -> bool:
         """
@@ -99,14 +109,14 @@ class StorageService:
     async def upload_user_photo(self, user_id: str, file: UploadFile) -> str:
         """Upload a user profile photo."""
         ext = file.filename.split(".")[-1] if file.filename else "jpg"
-        filename = f"{uuid.uuid4()}.{ext}"
-        return await self.upload_file(file, folder=f"users/{user_id}/photos", filename=filename)
+        filename = f"{user_id}-{uuid.uuid4()}.{ext}"
+        return await self.upload_file(file, folder="photos", filename=filename)
 
     async def upload_message_image(self, conversation_id: str, file: UploadFile) -> str:
         """Upload a message image."""
         ext = file.filename.split(".")[-1] if file.filename else "jpg"
-        filename = f"{uuid.uuid4()}.{ext}"
-        return await self.upload_file(file, folder=f"messages/{conversation_id}", filename=filename)
+        filename = f"{conversation_id}-{uuid.uuid4()}.{ext}"
+        return await self.upload_file(file, folder="messages", filename=filename)
 
 
 # Global storage instance
