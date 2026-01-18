@@ -312,11 +312,11 @@ class SwipeService:
         await swipe.insert()
 
         # Check for mutual like (match)
-        mutual = await Swipe.find_one(
-            (Swipe.swiper_id == swiped_id)
-            & (Swipe.swiped_id == str(swiper.id))
-            & (Swipe.swipe_type.in_([SwipeType.LIKE, SwipeType.SUPER_LIKE]))
-        )
+        mutual = await Swipe.find_one({
+            "swiper_id": swiped_id,
+            "swiped_id": str(swiper.id),
+            "swipe_type": {"$in": ["like", "super_like"]}
+        })
 
         if mutual:
             # Create match
@@ -395,11 +395,11 @@ class SwipeService:
         await swipe.insert()
 
         # Check for match
-        mutual = await Swipe.find_one(
-            (Swipe.swiper_id == swiped_id)
-            & (Swipe.swiped_id == str(swiper.id))
-            & (Swipe.swipe_type.in_([SwipeType.LIKE, SwipeType.SUPER_LIKE]))
-        )
+        mutual = await Swipe.find_one({
+            "swiper_id": swiped_id,
+            "swiped_id": str(swiper.id),
+            "swipe_type": {"$in": ["like", "super_like"]}
+        })
 
         if mutual:
             match = Match(

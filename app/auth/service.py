@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
+import uuid
 from app.models.user import User, Photo, UserPreferences, Location, Coordinates
 from app.models.refresh_token import RefreshToken
 from app.models.device import Device, Platform
@@ -21,7 +22,6 @@ from app.core.exceptions import (
     TokenExpiredError,
 )
 from app.auth.schemas import RegisterRequest, TokenResponse
-import secrets
 
 
 class AuthService:
@@ -33,6 +33,22 @@ class AuthService:
         if existing_user:
             raise EmailExistsError()
 
+        # Upload photos to DigitalOcean Spaces
+        from app.core.storage import storage
+
+        # Generate a temporary user ID for photo uploads
+        temp_user_id = str(uuid.uuid4())[:8]
+
+        photo_urls = []
+        for photo_data in data.photos:
+            if storage.is_base64_image(photo_data):
+                # Upload base64 image to cloud storage
+                url = await storage.upload_base64_image(photo_data, temp_user_id)
+                photo_urls.append(url)
+            else:
+                # Already a URL, use as-is
+                photo_urls.append(photo_data)
+
         # Create photos list
         photos = [
             Photo(
@@ -41,7 +57,7 @@ class AuthService:
                 is_primary=(i == 0),
                 order=i,
             )
-            for i, url in enumerate(data.photos)
+            for i, url in enumerate(photo_urls)
         ]
 
         # Reverse geocode location

@@ -144,11 +144,11 @@ class ChatService:
         conv = await ChatService.get_conversation(conversation_id, user)
 
         # Update message statuses
-        await Message.find(
-            (Message.conversation_id == str(conv.id))
-            & (Message.id.in_(message_ids))
-            & (Message.sender_id != str(user.id))
-        ).update({"$set": {"status": MessageStatus.READ.value}})
+        await Message.find({
+            "conversation_id": str(conv.id),
+            "_id": {"$in": message_ids},
+            "sender_id": {"$ne": str(user.id)}
+        }).update({"$set": {"status": MessageStatus.READ.value}})
 
         # Reset unread count
         conv.reset_unread(str(user.id))

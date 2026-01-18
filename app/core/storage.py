@@ -3,6 +3,8 @@ from botocore.config import Config
 from typing import Optional
 from fastapi import UploadFile
 import uuid
+import base64
+import re
 from datetime import datetime
 from app.core.config import settings
 
@@ -117,6 +119,74 @@ class StorageService:
         ext = file.filename.split(".")[-1] if file.filename else "jpg"
         filename = f"{conversation_id}-{uuid.uuid4()}.{ext}"
         return await self.upload_file(file, folder="messages", filename=filename)
+
+    async def upload_base64_image(self, base64_string: str, user_id: str) -> str:
+        """
+        Upload a base64 encoded image to DigitalOcean Spaces.
+        Handles both raw base64 and data URL formats.
+        Returns the CDN URL of the uploaded file.
+        """
+        # Handle data URL format (e.g., "data:image/jpeg;base64,/9j/4AAQ...")
+        if base64_string.startswith("data:"):
+            # Extract content type and base64 data
+            match = re.match(r"data:([^;]+);base64,(.+)", base64_string)
+            if match:
+                content_type = match.group(1)
+                base64_data = match.group(2)
+            else:
+                content_type = "image/jpeg"
+                base64_data = base64_string.split(",")[1] if "," in base64_string else base64_string
+        else:
+            content_type = "image/jpeg"
+            base64_data = base64_string
+
+        # Determine file extension from content type
+        ext_map = {
+            "image/jpeg": "jpg",
+            "image/jpg": "jpg",
+            "image/png": "png",
+            "image/webp": "webp",
+            "image/gif": "gif",
+        }
+        ext = ext_map.get(content_type, "jpg")
+
+        # Decode base64
+        try:
+            image_data = base64.b64decode(base64_data)
+        except Exception:
+            raise ValueError("Invalid base64 image data")
+
+        # Generate filename
+        filename = f"{user_id}-{uuid.uuid4()}.{ext}"
+
+        # Upload to Spaces
+        return await self.upload_bytes(
+            data=image_data,
+            filename=filename,
+            folder="photos",
+            content_type=content_type,
+        )
+
+    def is_base64_image(self, string: str) -> bool:
+        """Check if a string is a base64 encoded image."""
+        if not string:
+            return False
+        # Check for data URL format
+        if string.startswith("data:image"):
+            return True
+        # Check for raw base64 (starts with common image headers)
+        if string.startswith("/9j/"):  # JPEG
+            return True
+        if string.startswith("iVBOR"):  # PNG
+            return True
+        if string.startswith("R0lGO"):  # GIF
+            return True
+        if string.startswith("UklGR"):  # WEBP
+            return True
+        # Check if it's a very long string (likely base64)
+        if len(string) > 1000 and not string.startswith("http"):
+            return True
+        return False
 
 
 # Global storage instance
