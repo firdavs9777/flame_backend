@@ -226,10 +226,14 @@ class DiscoveryService:
         exclude_ids = set(swiped_ids) | blocked_ids
         exclude_ids.add(str(user.id))
 
+        # Get gender values (handle both enum and string)
+        looking_for = user.looking_for.value if hasattr(user.looking_for, 'value') else user.looking_for
+        gender = user.gender.value if hasattr(user.gender, 'value') else user.gender
+
         # Build query based on preferences
         query = {
-            "gender": user.looking_for.value,
-            "looking_for": user.gender.value,
+            "gender": looking_for,
+            "looking_for": gender,
             "age": {"$gte": user.preferences.min_age, "$lte": user.preferences.max_age},
             "settings.discovery_enabled": True,
         }
