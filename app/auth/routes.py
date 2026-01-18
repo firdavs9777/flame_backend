@@ -22,22 +22,29 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 
 def format_user_response(user: User) -> dict:
     """Format user object for response."""
-    location_str = None
+    location = None
     if user.location:
-        parts = [user.location.city, user.location.state]
-        location_str = ", ".join(filter(None, parts))
+        location = {
+            "city": user.location.city,
+            "state": user.location.state,
+            "country": user.location.country,
+            "coordinates": {
+                "latitude": user.location.coordinates.latitude,
+                "longitude": user.location.coordinates.longitude,
+            } if user.location.coordinates else None,
+        }
 
     return {
         "id": str(user.id),
         "email": user.email,
         "name": user.name,
         "age": user.age,
-        "gender": user.gender.value,
-        "looking_for": user.looking_for.value,
+        "gender": user.gender.value if hasattr(user.gender, 'value') else user.gender,
+        "looking_for": user.looking_for.value if hasattr(user.looking_for, 'value') else user.looking_for,
         "bio": user.bio,
         "interests": user.interests,
         "photos": [p.url for p in user.photos],
-        "location": location_str,
+        "location": location,
         "is_online": user.is_online,
         "is_verified": user.is_verified,
         "last_active": user.last_active.isoformat(),

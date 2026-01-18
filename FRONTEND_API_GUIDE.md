@@ -3,16 +3,30 @@
 ## Base URL
 ```
 Development: http://localhost:8000/v1
-Production: https://api.flame.app/v1
+Production: https://flame.banatalk.com/v1
 ```
 
-## Authentication Flow
+## Headers
+```
+Authorization: Bearer <access_token>  (for protected routes)
+Content-Type: application/json
+```
 
-### 1. Register New User
+---
+
+# Authentication
+
+## 1. Register New User
+
+**Location is required** - user must grant location permission before registration.
+
 ```http
 POST /v1/auth/register
 Content-Type: application/json
+```
 
+**Request:**
+```json
 {
   "email": "user@example.com",
   "password": "SecurePass123",
@@ -22,41 +36,119 @@ Content-Type: application/json
   "looking_for": "female",
   "bio": "Looking for something meaningful",
   "interests": ["Music", "Travel", "Food"],
-  "photos": ["https://example.com/photo1.jpg"]
+  "photos": ["https://example.com/photo1.jpg"],
+  "latitude": 37.7749,
+  "longitude": -122.4194
 }
 ```
 
-**Response:** Returns user object + tokens. A **6-digit verification code** is sent to the user's email.
+**Validation Rules:**
+| Field | Rules |
+|-------|-------|
+| `email` | Valid email, unique |
+| `password` | Min 8 chars, 1 uppercase, 1 lowercase, 1 number |
+| `name` | 2-50 characters |
+| `age` | 18-100 |
+| `gender` | `male`, `female`, `non_binary`, `other` |
+| `looking_for` | `male`, `female`, `non_binary`, `other` |
+| `bio` | Optional, max 500 chars |
+| `interests` | 1-10 items |
+| `photos` | 1-6 URLs |
+| `latitude` | -90 to 90 (required) |
+| `longitude` | -180 to 180 (required) |
 
-### 2. Verify Email (6-digit code)
+**Response (201):**
+```json
+{
+  "success": true,
+  "data": {
+    "user": {
+      "id": "696c6e271c766eb895ab556d",
+      "email": "user@example.com",
+      "name": "John Doe",
+      "age": 25,
+      "gender": "male",
+      "looking_for": "female",
+      "bio": "Looking for something meaningful",
+      "interests": ["Music", "Travel", "Food"],
+      "photos": ["https://my-projects-media.sfo3.cdn.digitaloceanspaces.com/flame_backend/photos/1737225600000-user123-abc.jpg"],
+      "location": {
+        "city": "San Francisco",
+        "state": "California",
+        "country": "United States",
+        "coordinates": {
+          "latitude": 37.7749,
+          "longitude": -122.4194
+        }
+      },
+      "is_online": true,
+      "is_verified": false,
+      "last_active": "2024-01-15T10:30:00Z",
+      "created_at": "2024-01-15T10:30:00Z",
+      "preferences": {
+        "min_age": 18,
+        "max_age": 50,
+        "max_distance": 50
+      }
+    },
+    "tokens": {
+      "access_token": "eyJhbGciOiJIUzI1NiIs...",
+      "refresh_token": "eyJhbGciOiJIUzI1NiIs...",
+      "expires_in": 3600
+    }
+  }
+}
+```
+
+> **Note:** A 6-digit verification code is sent to the user's email.
+
+---
+
+## 2. Verify Email
+
 ```http
 POST /v1/auth/verify-email
 Content-Type: application/json
+```
 
+**Request:**
+```json
 {
   "email": "user@example.com",
   "code": "123456"
 }
 ```
 
-**Important:**
-- Code expires in **15 minutes**
-- User enters the 6-digit code from their email
-- Show a numeric keypad input on mobile
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Email successfully verified"
+}
+```
 
-### 3. Resend Verification Code
+> Code expires in **15 minutes**
+
+---
+
+## 3. Resend Verification Code
+
 ```http
 POST /v1/auth/resend-verification
 Authorization: Bearer <access_token>
 ```
 
-Sends a new 6-digit code to the user's email.
+---
 
-### 4. Login
+## 4. Login
+
 ```http
 POST /v1/auth/login
 Content-Type: application/json
+```
 
+**Request:**
+```json
 {
   "email": "user@example.com",
   "password": "SecurePass123",
@@ -64,107 +156,97 @@ Content-Type: application/json
 }
 ```
 
-### 5. Forgot Password
+**Response:** Same as register response.
+
+---
+
+## 5. Refresh Token
+
+```http
+POST /v1/auth/refresh
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "refresh_token": "your_refresh_token"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "access_token": "new_access_token",
+    "refresh_token": "new_refresh_token",
+    "expires_in": 3600
+  }
+}
+```
+
+---
+
+## 6. Logout
+
+```http
+POST /v1/auth/logout
+Authorization: Bearer <access_token>
+```
+
+---
+
+## 7. Forgot Password
+
 ```http
 POST /v1/auth/forgot-password
 Content-Type: application/json
+```
 
+**Request:**
+```json
 {
   "email": "user@example.com"
 }
 ```
 
-Sends a **6-digit reset code** to the email.
+> Sends a 6-digit reset code to email.
 
-### 6. Reset Password (6-digit code)
+---
+
+## 8. Reset Password
+
 ```http
 POST /v1/auth/reset-password
 Content-Type: application/json
+```
 
+**Request:**
+```json
 {
-  "email": "user@example.com",
-  "code": "123456",
+  "token": "123456",
   "password": "NewSecurePass123",
   "password_confirmation": "NewSecurePass123"
 }
 ```
 
-**Important:**
-- Code expires in **15 minutes**
-- Requires email + code + new password
-
 ---
 
-## Verification Code UI Recommendations
+## 9. Change Password (Authenticated)
 
-### Email Verification Screen
-```
-┌─────────────────────────────────────┐
-│                                     │
-│     Verify Your Email 📧            │
-│                                     │
-│  We sent a 6-digit code to:         │
-│  user@example.com                   │
-│                                     │
-│  ┌───┬───┬───┬───┬───┬───┐         │
-│  │ 1 │ 2 │ 3 │ 4 │ 5 │ 6 │         │
-│  └───┴───┴───┴───┴───┴───┘         │
-│                                     │
-│  Code expires in 14:32              │
-│                                     │
-│  [Resend Code]                      │
-│                                     │
-└─────────────────────────────────────┘
-```
-
-### Password Reset Screen
-```
-┌─────────────────────────────────────┐
-│                                     │
-│     Reset Password 🔐               │
-│                                     │
-│  Enter the code sent to:            │
-│  user@example.com                   │
-│                                     │
-│  ┌───┬───┬───┬───┬───┬───┐         │
-│  │   │   │   │   │   │   │         │
-│  └───┴───┴───┴───┴───┴───┘         │
-│                                     │
-│  New Password:                      │
-│  ┌─────────────────────────┐        │
-│  │ ••••••••                │        │
-│  └─────────────────────────┘        │
-│                                     │
-│  Confirm Password:                  │
-│  ┌─────────────────────────┐        │
-│  │ ••••••••                │        │
-│  └─────────────────────────┘        │
-│                                     │
-│  [Reset Password]                   │
-│                                     │
-└─────────────────────────────────────┘
-```
-
----
-
-## Token Management
-
-### Access Token
-- Expires in **60 minutes**
-- Include in all authenticated requests:
-```
-Authorization: Bearer <access_token>
-```
-
-### Refresh Token
-- Expires in **30 days**
-- Use to get a new access token:
 ```http
-POST /v1/auth/refresh
+POST /v1/auth/change-password
+Authorization: Bearer <access_token>
 Content-Type: application/json
+```
 
+**Request:**
+```json
 {
-  "refresh_token": "your_refresh_token"
+  "current_password": "OldPass123",
+  "new_password": "NewPass123",
+  "new_password_confirmation": "NewPass123"
 }
 ```
 
@@ -208,73 +290,97 @@ Content-Type: application/json
 
 ---
 
-## Error Handling
+# User Profile
 
-All errors follow this format:
+## Get Current User
+
+```http
+GET /v1/users/me
+Authorization: Bearer <access_token>
+```
+
+**Response:**
 ```json
 {
-  "success": false,
-  "error": {
-    "code": "VALIDATION_ERROR",
-    "message": "Human readable message",
-    "details": { "field": "specific error" }
+  "success": true,
+  "data": {
+    "id": "696c6e271c766eb895ab556d",
+    "email": "user@example.com",
+    "name": "John Doe",
+    "age": 25,
+    "gender": "male",
+    "looking_for": "female",
+    "bio": "Looking for something meaningful",
+    "interests": ["Music", "Travel"],
+    "photos": [
+      {
+        "id": "photo_1",
+        "url": "https://cdn.example.com/photo1.jpg",
+        "is_primary": true,
+        "order": 0
+      }
+    ],
+    "location": {
+      "city": "San Francisco",
+      "state": "California",
+      "country": "United States",
+      "coordinates": {
+        "latitude": 37.7749,
+        "longitude": -122.4194
+      }
+    },
+    "is_online": true,
+    "is_verified": true,
+    "last_active": "2024-01-15T10:30:00Z",
+    "created_at": "2024-01-15T10:30:00Z",
+    "preferences": {
+      "min_age": 18,
+      "max_age": 50,
+      "max_distance": 50,
+      "show_distance": true,
+      "show_online_status": true
+    },
+    "settings": {
+      "notifications_enabled": true,
+      "discovery_enabled": true,
+      "dark_mode": false
+    }
   }
 }
 ```
 
-### Common Error Codes
-| Code | HTTP Status | Description |
-|------|-------------|-------------|
-| `VALIDATION_ERROR` | 400 | Invalid input data |
-| `INVALID_CREDENTIALS` | 401 | Wrong email/password |
-| `UNAUTHORIZED` | 401 | Missing/invalid token |
-| `TOKEN_EXPIRED` | 401 | Token has expired |
-| `FORBIDDEN` | 403 | Action not allowed |
-| `NOT_FOUND` | 404 | Resource not found |
-| `EMAIL_EXISTS` | 409 | Email already registered |
-
 ---
 
-## WebSocket Connection
+## Update Profile
 
-```javascript
-const ws = new WebSocket('wss://api.flame.app/ws?token=<access_token>');
+```http
+PATCH /v1/users/me
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
 
-// Events to send
-ws.send(JSON.stringify({ event: 'ping' }));
-ws.send(JSON.stringify({ event: 'typing', data: { conversation_id: 'xxx' } }));
-ws.send(JSON.stringify({ event: 'stop_typing', data: { conversation_id: 'xxx' } }));
-
-// Events to listen
-ws.onmessage = (event) => {
-  const { event: eventName, data } = JSON.parse(event.data);
-
-  switch(eventName) {
-    case 'new_message':
-      // Handle new message
-      break;
-    case 'new_match':
-      // Show match animation
-      break;
-    case 'user_typing':
-      // Show typing indicator
-      break;
-  }
-};
+**Request (all fields optional):**
+```json
+{
+  "name": "John Updated",
+  "age": 26,
+  "bio": "New bio here",
+  "interests": ["Music", "Sports", "Travel"]
+}
 ```
 
 ---
 
-## Location Updates
+## Update Location
 
-The backend automatically converts GPS coordinates to city/state/country using reverse geocoding. **You only need to send latitude and longitude.**
-
-### Update User Location
 ```http
 PATCH /v1/users/me/location
 Authorization: Bearer <access_token>
 Content-Type: application/json
+```
 
+**Request:**
+```json
 {
   "latitude": 40.7128,
   "longitude": -74.0060
@@ -299,73 +405,238 @@ Content-Type: application/json
 }
 ```
 
-### Frontend Implementation (React Native)
+---
 
-```javascript
-import * as Location from 'expo-location';
+## Update Preferences
 
-async function updateUserLocation() {
-  // Request permission
-  const { status } = await Location.requestForegroundPermissionsAsync();
-  if (status !== 'granted') {
-    console.log('Location permission denied');
-    return;
-  }
-
-  // Get current position
-  const location = await Location.getCurrentPositionAsync({});
-
-  // Send to backend (backend handles reverse geocoding)
-  const response = await fetch('/v1/users/me/location', {
-    method: 'PATCH',
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      latitude: location.coords.latitude,
-      longitude: location.coords.longitude,
-    }),
-  });
-
-  const data = await response.json();
-  // data.data.location.city = "New York"
-  // data.data.location.state = "New York"
-}
+```http
+PATCH /v1/users/me/preferences
+Authorization: Bearer <access_token>
+Content-Type: application/json
 ```
 
-### When to Update Location
-- On app launch (if permission granted)
-- When user opens discovery/swiping screen
-- Periodically in background (optional)
-
-### Distance in Discovery
-When fetching potential matches, distance is calculated automatically:
+**Request:**
 ```json
 {
-  "users": [
-    {
-      "id": "usr_xyz",
-      "name": "Jane",
-      "distance": 5.2,  // miles from current user
-      "location": "Brooklyn, NY"
-    }
-  ]
+  "min_age": 21,
+  "max_age": 35,
+  "max_distance": 25,
+  "show_distance": true,
+  "show_online_status": true
 }
 ```
 
 ---
 
-## Photo Upload
+## Update Notification Settings
 
-Photos are uploaded to DigitalOcean Spaces and URLs are returned.
+```http
+PATCH /v1/users/me/notifications
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "new_matches": true,
+  "new_messages": true,
+  "super_likes": true,
+  "promotions": false
+}
+```
+
+---
+
+# Photo Management
+
+## Upload Photo
 
 ```http
 POST /v1/users/me/photos
+Authorization: Bearer <access_token>
 Content-Type: multipart/form-data
+```
 
-photo: <binary file>
-is_primary: false
+**Form Data:**
+- `photo`: File (image/jpeg, image/png, image/webp)
+- `is_primary`: boolean (optional)
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "id": "photo_2_1705312200",
+    "url": "https://my-projects-media.sfo3.cdn.digitaloceanspaces.com/flame_backend/photos/1737225600000-user123-abc.jpg",
+    "is_primary": false,
+    "order": 1
+  }
+}
+```
+
+---
+
+## Delete Photo
+
+```http
+DELETE /v1/users/me/photos/{photo_id}
+Authorization: Bearer <access_token>
+```
+
+> Must have at least 1 photo remaining.
+
+---
+
+## Reorder Photos
+
+```http
+PATCH /v1/users/me/photos/reorder
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "photo_ids": ["photo_2", "photo_1", "photo_3"]
+}
+```
+
+> First photo becomes primary.
+
+---
+
+# Discovery
+
+## Get Potential Matches
+
+```http
+GET /v1/discover?limit=10&offset=0
+Authorization: Bearer <access_token>
+```
+
+**Query Parameters:**
+| Param | Default | Max | Description |
+|-------|---------|-----|-------------|
+| `limit` | 10 | 50 | Number of profiles to return |
+| `offset` | 0 | - | Pagination offset |
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "users": [
+      {
+        "id": "user_xyz",
+        "name": "Jane",
+        "age": 24,
+        "gender": "female",
+        "bio": "Love hiking and coffee",
+        "interests": ["Hiking", "Coffee", "Music"],
+        "photos": ["https://cdn.example.com/jane1.jpg"],
+        "location": "Brooklyn, NY",
+        "distance": 5.2,
+        "is_online": true,
+        "last_active": "2024-01-15T10:30:00Z",
+        "common_interests": ["Music"]
+      }
+    ],
+    "pagination": {
+      "total": 45,
+      "limit": 10,
+      "offset": 0,
+      "has_more": true
+    }
+  }
+}
+```
+
+> Distance is in miles, calculated from user's location.
+
+---
+
+# Swipes
+
+## Like (Swipe Right)
+
+```http
+POST /v1/swipes/like
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "user_id": "target_user_id"
+}
+```
+
+**Response (No Match):**
+```json
+{
+  "success": true,
+  "data": {
+    "liked": true,
+    "is_match": false
+  }
+}
+```
+
+**Response (Match!):**
+```json
+{
+  "success": true,
+  "data": {
+    "liked": true,
+    "is_match": true,
+    "match": {
+      "id": "match_123",
+      "user": {
+        "id": "target_user_id",
+        "name": "Jane",
+        "photos": ["https://cdn.example.com/jane1.jpg"]
+      },
+      "matched_at": "2024-01-15T10:30:00Z"
+    }
+  }
+}
+```
+
+---
+
+## Pass (Swipe Left)
+
+```http
+POST /v1/swipes/pass
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "user_id": "target_user_id"
+}
+```
+
+---
+
+## Super Like
+
+```http
+POST /v1/swipes/super-like
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "user_id": "target_user_id"
+}
 ```
 
 **Response:**
@@ -373,35 +644,516 @@ is_primary: false
 {
   "success": true,
   "data": {
-    "id": "photo_123",
-    "url": "https://my-projects-media.sfo3.cdn.digitaloceanspaces.com/users/xxx/photo.jpg",
-    "is_primary": false,
-    "order": 2
+    "super_liked": true,
+    "is_match": false,
+    "remaining_super_likes": 2
+  }
+}
+```
+
+> Users get 3 super likes per day (resets at midnight UTC).
+
+---
+
+## Undo Last Swipe (Premium)
+
+```http
+POST /v1/swipes/undo
+Authorization: Bearer <access_token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "undone": true,
+    "user": {
+      "id": "user_id",
+      "name": "Jane"
+    }
+  }
+}
+```
+
+> Requires premium subscription.
+
+---
+
+# Matches
+
+## Get All Matches
+
+```http
+GET /v1/matches?limit=20&offset=0&new_only=false
+Authorization: Bearer <access_token>
+```
+
+**Query Parameters:**
+| Param | Default | Description |
+|-------|---------|-------------|
+| `limit` | 20 | Max 50 |
+| `offset` | 0 | Pagination |
+| `new_only` | false | Only show unviewed matches |
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "matches": [
+      {
+        "id": "match_123",
+        "user": {
+          "id": "user_xyz",
+          "name": "Jane",
+          "age": 24,
+          "photos": ["https://cdn.example.com/jane1.jpg"],
+          "is_online": true,
+          "last_active": "2024-01-15T10:30:00Z"
+        },
+        "matched_at": "2024-01-15T10:30:00Z",
+        "is_new": true,
+        "last_message": {
+          "id": "msg_abc",
+          "content": "Hey! How are you?",
+          "sender_id": "user_xyz",
+          "timestamp": "2024-01-15T11:00:00Z"
+        }
+      }
+    ],
+    "pagination": {
+      "total": 12,
+      "limit": 20,
+      "offset": 0,
+      "has_more": false
+    }
   }
 }
 ```
 
 ---
 
-## Password Requirements
+## Unmatch
 
-- Minimum 8 characters
-- At least one uppercase letter
-- At least one lowercase letter
-- At least one number
-
----
-
-## Gender Options
-
-```typescript
-type Gender = 'male' | 'female' | 'non_binary' | 'other';
+```http
+DELETE /v1/matches/{match_id}
+Authorization: Bearer <access_token>
 ```
 
 ---
 
-## Questions?
+# Chat
 
-Contact the backend team or check the Swagger docs at:
+## Get Conversations
+
+```http
+GET /v1/conversations?limit=20&offset=0
+Authorization: Bearer <access_token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "conversations": [
+      {
+        "id": "conv_123",
+        "match_id": "match_123",
+        "other_user": {
+          "id": "user_xyz",
+          "name": "Jane",
+          "photos": ["https://cdn.example.com/jane1.jpg"],
+          "is_online": true
+        },
+        "last_message": {
+          "id": "msg_abc",
+          "content": "Hey! How are you?",
+          "sender_id": "user_xyz",
+          "timestamp": "2024-01-15T11:00:00Z"
+        },
+        "unread_count": 2,
+        "updated_at": "2024-01-15T11:00:00Z"
+      }
+    ]
+  }
+}
+```
+
+---
+
+## Get Messages
+
+```http
+GET /v1/conversations/{conversation_id}/messages?limit=50&before={message_id}
+Authorization: Bearer <access_token>
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "messages": [
+      {
+        "id": "msg_abc",
+        "content": "Hey! How are you?",
+        "image_url": null,
+        "sender_id": "user_xyz",
+        "status": "read",
+        "created_at": "2024-01-15T11:00:00Z"
+      }
+    ],
+    "has_more": true
+  }
+}
+```
+
+---
+
+## Send Message
+
+```http
+POST /v1/conversations/{conversation_id}/messages
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "content": "Hey! Nice to meet you!"
+}
+```
+
+---
+
+## Send Image Message
+
+```http
+POST /v1/conversations/{conversation_id}/messages/image
+Authorization: Bearer <access_token>
+Content-Type: multipart/form-data
+```
+
+**Form Data:**
+- `image`: File
+
+---
+
+## Mark Messages as Read
+
+```http
+POST /v1/conversations/{conversation_id}/read
+Authorization: Bearer <access_token>
+```
+
+---
+
+# Block & Report
+
+## Block User
+
+```http
+POST /v1/blocks
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "user_id": "user_to_block"
+}
+```
+
+---
+
+## Unblock User
+
+```http
+DELETE /v1/blocks/{user_id}
+Authorization: Bearer <access_token>
+```
+
+---
+
+## Get Blocked Users
+
+```http
+GET /v1/blocks
+Authorization: Bearer <access_token>
+```
+
+---
+
+## Report User
+
+```http
+POST /v1/reports
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "user_id": "user_to_report",
+  "reason": "inappropriate_content",
+  "details": "Optional additional details"
+}
+```
+
+**Reason options:**
+- `inappropriate_content`
+- `fake_profile`
+- `harassment`
+- `spam`
+- `underage`
+- `other`
+
+---
+
+# Push Notifications
+
+## Register Device
+
+```http
+POST /v1/devices
+Authorization: Bearer <access_token>
+Content-Type: application/json
+```
+
+**Request:**
+```json
+{
+  "token": "fcm_device_token",
+  "platform": "ios"
+}
+```
+
+**Platform options:** `ios`, `android`
+
+---
+
+# WebSocket (Real-time)
+
+## Connection
+
+```javascript
+const ws = new WebSocket('wss://flame.banatalk.com/ws?token=<access_token>');
+```
+
+## Events to Send
+
+```javascript
+// Ping (keep alive)
+ws.send(JSON.stringify({ event: 'ping' }));
+
+// Typing indicator
+ws.send(JSON.stringify({
+  event: 'typing',
+  data: { conversation_id: 'conv_123' }
+}));
+
+// Stop typing
+ws.send(JSON.stringify({
+  event: 'stop_typing',
+  data: { conversation_id: 'conv_123' }
+}));
+```
+
+## Events to Listen
+
+```javascript
+ws.onmessage = (event) => {
+  const { event: eventName, data } = JSON.parse(event.data);
+
+  switch(eventName) {
+    case 'new_message':
+      // New message received
+      // data: { message: {...}, conversation_id: '...' }
+      break;
+    case 'new_match':
+      // New match! Show animation
+      // data: { match: {...}, user: {...} }
+      break;
+    case 'user_typing':
+      // Show typing indicator
+      // data: { conversation_id: '...', user_id: '...' }
+      break;
+    case 'user_stopped_typing':
+      // Hide typing indicator
+      break;
+    case 'message_read':
+      // Update message status
+      // data: { conversation_id: '...', message_ids: [...] }
+      break;
+  }
+};
+```
+
+---
+
+# Error Handling
+
+## Error Response Format
+
+```json
+{
+  "success": false,
+  "error": {
+    "code": "ERROR_CODE",
+    "message": "Human readable message",
+    "details": {}
+  }
+}
+```
+
+## Error Codes
+
+| Code | HTTP | Description |
+|------|------|-------------|
+| `VALIDATION_ERROR` | 400 | Invalid input data |
+| `INVALID_CREDENTIALS` | 401 | Wrong email/password |
+| `UNAUTHORIZED` | 401 | Missing/invalid token |
+| `TOKEN_EXPIRED` | 401 | Token has expired |
+| `FORBIDDEN` | 403 | Action not allowed |
+| `NOT_FOUND` | 404 | Resource not found |
+| `EMAIL_EXISTS` | 409 | Email already registered |
+| `RATE_LIMITED` | 429 | Too many requests |
+| `SERVER_ERROR` | 500 | Internal server error |
+
+---
+
+# Token Management
+
+| Token | Expiry | Usage |
+|-------|--------|-------|
+| Access Token | 60 minutes | API requests |
+| Refresh Token | 30 days | Get new access token |
+
+## Auto-refresh Logic (React Native)
+
+```javascript
+import axios from 'axios';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const api = axios.create({
+  baseURL: 'https://flame.banatalk.com/v1',
+});
+
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const originalRequest = error.config;
+
+    if (error.response?.status === 401 && !originalRequest._retry) {
+      originalRequest._retry = true;
+
+      try {
+        const refreshToken = await AsyncStorage.getItem('refresh_token');
+        const { data } = await axios.post(
+          'https://flame.banatalk.com/v1/auth/refresh',
+          { refresh_token: refreshToken }
+        );
+
+        await AsyncStorage.setItem('access_token', data.data.access_token);
+        await AsyncStorage.setItem('refresh_token', data.data.refresh_token);
+
+        originalRequest.headers.Authorization = `Bearer ${data.data.access_token}`;
+        return api(originalRequest);
+      } catch (refreshError) {
+        // Redirect to login
+        return Promise.reject(refreshError);
+      }
+    }
+
+    return Promise.reject(error);
+  }
+);
+
+export default api;
+```
+
+---
+
+# Location Permission Flow
+
+```javascript
+import * as Location from 'expo-location';
+
+async function requestLocationAndRegister(userData) {
+  // 1. Request permission
+  const { status } = await Location.requestForegroundPermissionsAsync();
+
+  if (status !== 'granted') {
+    Alert.alert(
+      'Location Required',
+      'Flame needs your location to find matches near you.'
+    );
+    return;
+  }
+
+  // 2. Get current location
+  const location = await Location.getCurrentPositionAsync({});
+
+  // 3. Register with location
+  const response = await api.post('/auth/register', {
+    ...userData,
+    latitude: location.coords.latitude,
+    longitude: location.coords.longitude,
+  });
+
+  return response.data;
+}
+```
+
+---
+
+# File Upload Limits
+
+| Type | Max Size | Formats |
+|------|----------|---------|
+| Photos | 10 MB | JPEG, PNG, WebP |
+| Max photos per user | 6 | - |
+
+---
+
+# Rate Limits
+
+| Endpoint | Limit |
+|----------|-------|
+| Login | 5 per 15 minutes |
+| Register | 3 per hour |
+| General API | 100 per minute |
+
+---
+
+# Swagger Documentation
+
 - Development: http://localhost:8000/docs
-- Production: https://api.flame.app/docs
+- Production: https://flame.banatalk.com/docs
+
+---
+
+# Health Check
+
+```http
+GET /health
+```
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "version": "1.0.0"
+}
+```
+
+---
+
+# Contact
+
+For API questions or issues, contact the backend team.
