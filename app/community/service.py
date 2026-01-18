@@ -31,10 +31,10 @@ class UserService:
             raise NotFoundError("User not found")
 
         # Check if blocked
-        is_blocked = await Block.find_one(
-            (Block.blocker_id == str(requester.id)) & (Block.blocked_id == user_id)
-            | (Block.blocker_id == user_id) & (Block.blocked_id == str(requester.id))
-        )
+        is_blocked = await Block.find_one({"$or": [
+            {"blocker_id": str(requester.id), "blocked_id": user_id},
+            {"blocker_id": user_id, "blocked_id": str(requester.id)}
+        ]})
         if is_blocked:
             raise NotFoundError("User not found")
 
@@ -180,21 +180,25 @@ class UserService:
             raise ForbiddenError("Invalid password")
 
         # Delete related data
-        await Swipe.find(
-            (Swipe.swiper_id == str(user.id)) | (Swipe.swiped_id == str(user.id))
-        ).delete()
+        await Swipe.find({"$or": [
+            {"swiper_id": str(user.id)},
+            {"swiped_id": str(user.id)}
+        ]}).delete()
 
-        await Match.find(
-            (Match.user1_id == str(user.id)) | (Match.user2_id == str(user.id))
-        ).delete()
+        await Match.find({"$or": [
+            {"user1_id": str(user.id)},
+            {"user2_id": str(user.id)}
+        ]}).delete()
 
-        await Conversation.find(
-            (Conversation.user1_id == str(user.id)) | (Conversation.user2_id == str(user.id))
-        ).delete()
+        await Conversation.find({"$or": [
+            {"user1_id": str(user.id)},
+            {"user2_id": str(user.id)}
+        ]}).delete()
 
-        await Block.find(
-            (Block.blocker_id == str(user.id)) | (Block.blocked_id == str(user.id))
-        ).delete()
+        await Block.find({"$or": [
+            {"blocker_id": str(user.id)},
+            {"blocked_id": str(user.id)}
+        ]}).delete()
 
         # Delete user
         await user.delete()
@@ -213,9 +217,10 @@ class DiscoveryService:
         swiped_ids = [s.swiped_id for s in swiped]
 
         # Get blocked users (both directions)
-        blocked = await Block.find(
-            (Block.blocker_id == str(user.id)) | (Block.blocked_id == str(user.id))
-        ).to_list()
+        blocked = await Block.find({"$or": [
+            {"blocker_id": str(user.id)},
+            {"blocked_id": str(user.id)}
+        ]}).to_list()
         blocked_ids = set()
         for b in blocked:
             blocked_ids.add(b.blocker_id)
@@ -286,9 +291,10 @@ class SwipeService:
     async def like(swiper: User, swiped_id: str) -> Tuple[bool, Optional[Match]]:
         """Like a user (swipe right)."""
         # Check if already swiped
-        existing = await Swipe.find_one(
-            (Swipe.swiper_id == str(swiper.id)) & (Swipe.swiped_id == swiped_id)
-        )
+        existing = await Swipe.find_one({
+            "swiper_id": str(swiper.id),
+            "swiped_id": swiped_id
+        })
         if existing:
             raise ValidationError("Already swiped on this user")
 
@@ -335,9 +341,10 @@ class SwipeService:
     @staticmethod
     async def pass_user(swiper: User, swiped_id: str):
         """Pass on a user (swipe left)."""
-        existing = await Swipe.find_one(
-            (Swipe.swiper_id == str(swiper.id)) & (Swipe.swiped_id == swiped_id)
-        )
+        existing = await Swipe.find_one({
+            "swiper_id": str(swiper.id),
+            "swiped_id": swiped_id
+        })
         if existing:
             raise ValidationError("Already swiped on this user")
 
@@ -365,9 +372,10 @@ class SwipeService:
         if swiper.super_likes_remaining <= 0:
             raise ValidationError("No super likes remaining today")
 
-        existing = await Swipe.find_one(
-            (Swipe.swiper_id == str(swiper.id)) & (Swipe.swiped_id == swiped_id)
-        )
+        existing = await Swipe.find_one({
+            "swiper_id": str(swiper.id),
+            "swiped_id": swiped_id
+        })
         if existing:
             raise ValidationError("Already swiped on this user")
 
@@ -435,10 +443,10 @@ class SwipeService:
 
         # If the swipe resulted in a match, we need to undo that too
         if last_swipe.swipe_type in [SwipeType.LIKE, SwipeType.SUPER_LIKE]:
-            match = await Match.find_one(
-                ((Match.user1_id == str(user.id)) & (Match.user2_id == last_swipe.swiped_id))
-                | ((Match.user1_id == last_swipe.swiped_id) & (Match.user2_id == str(user.id)))
-            )
+            match = await Match.find_one({"$or": [
+                {"user1_id": str(user.id), "user2_id": last_swipe.swiped_id},
+                {"user1_id": last_swipe.swiped_id, "user2_id": str(user.id)}
+            ]})
             if match and match.is_active:
                 match.is_active = False
                 await match.save()
@@ -543,9 +551,10 @@ class BlockService:
         if not blocked_user:
             raise NotFoundError("User not found")
 
-        existing = await Block.find_one(
-            (Block.blocker_id == str(blocker.id)) & (Block.blocked_id == blocked_id)
-        )
+        existing = await Block.find_one({
+            "blocker_id": str(blocker.id),
+            "blocked_id": blocked_id
+        })
         if existing:
             raise ValidationError("User already blocked")
 
@@ -556,13 +565,10 @@ class BlockService:
         await block.insert()
 
         # Remove any existing match
-        match = await Match.find_one(
-            (
-                (Match.user1_id == str(blocker.id)) & (Match.user2_id == blocked_id)
-                | (Match.user1_id == blocked_id) & (Match.user2_id == str(blocker.id))
-            )
-            & (Match.is_active == True)
-        )
+        match = await Match.find_one({"$or": [
+            {"user1_id": str(blocker.id), "user2_id": blocked_id, "is_active": True},
+            {"user1_id": blocked_id, "user2_id": str(blocker.id), "is_active": True}
+        ]})
         if match:
             match.is_active = False
             await match.save()
@@ -570,9 +576,10 @@ class BlockService:
     @staticmethod
     async def unblock_user(blocker: User, blocked_id: str):
         """Unblock a user."""
-        block = await Block.find_one(
-            (Block.blocker_id == str(blocker.id)) & (Block.blocked_id == blocked_id)
-        )
+        block = await Block.find_one({
+            "blocker_id": str(blocker.id),
+            "blocked_id": blocked_id
+        })
         if not block:
             raise NotFoundError("User not blocked")
 
