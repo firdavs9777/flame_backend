@@ -16,9 +16,14 @@ class RedisPubSub:
 
     async def connect(self):
         """Connect to Redis."""
-        self.redis = redis.from_url(settings.REDIS_URL, decode_responses=True)
-        self.pubsub = self.redis.pubsub()
-        await self.pubsub.subscribe("websocket_events")
+        print(f"[Redis] Connecting to {settings.REDIS_URL}...")
+        try:
+            self.redis = redis.from_url(settings.REDIS_URL, decode_responses=True)
+            self.pubsub = self.redis.pubsub()
+            await self.pubsub.subscribe("websocket_events")
+            print("[Redis] Connected and subscribed to websocket_events channel")
+        except Exception as e:
+            print(f"[Redis] Failed to connect: {e}")
 
     async def disconnect(self):
         """Disconnect from Redis."""
