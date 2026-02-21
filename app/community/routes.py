@@ -349,7 +349,8 @@ async def like_user(
         conversation_id = str(conversation.id) if conversation else None
 
         # Notify the other user about the match via WebSocket
-        from app.chat.websocket import notify_new_match, manager
+        # Redis pub/sub handles cross-worker subscription automatically
+        from app.chat.websocket import notify_new_match
         await notify_new_match(data.user_id, {
             "match": match_data,
             "user": {
@@ -359,10 +360,6 @@ async def like_user(
             },
             "conversation_id": conversation_id,
         }, conversation_id=conversation_id)
-
-        # Also subscribe the current user (swiper) to the new conversation
-        if conversation_id and str(current_user.id) in manager.user_conversations:
-            manager.user_conversations[str(current_user.id)].add(conversation_id)
 
     return response
 
@@ -416,7 +413,8 @@ async def super_like_user(
         conversation_id = str(conversation.id) if conversation else None
 
         # Notify the other user about the match via WebSocket
-        from app.chat.websocket import notify_new_match, manager
+        # Redis pub/sub handles cross-worker subscription automatically
+        from app.chat.websocket import notify_new_match
         await notify_new_match(data.user_id, {
             "match": match_data,
             "user": {
@@ -426,10 +424,6 @@ async def super_like_user(
             },
             "conversation_id": conversation_id,
         }, conversation_id=conversation_id)
-
-        # Also subscribe the current user (swiper) to the new conversation
-        if conversation_id and str(current_user.id) in manager.user_conversations:
-            manager.user_conversations[str(current_user.id)].add(conversation_id)
 
     return response
 
