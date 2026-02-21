@@ -1,4 +1,5 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, status, UploadFile, File
+import uuid
 from app.auth.schemas import (
     RegisterRequest,
     LoginRequest,
@@ -59,6 +60,39 @@ async def register(data: RegisterRequest):
         "data": {
             "user": format_user_response(user),
             "tokens": tokens.model_dump(),
+        },
+    }
+
+
+@router.post("/upload-photo", status_code=status.HTTP_201_CREATED)
+async def upload_photo_for_registration(
+    photo: UploadFile = File(...),
+    is_primary: bool = False,
+):
+    """
+    Upload a photo for registration (before user account exists).
+    Photos are stored in a temporary folder and URL is returned.
+    """
+    from app.core.storage import storage
+
+    # Generate unique filename
+    ext = photo.filename.split(".")[-1] if photo.filename else "jpg"
+    filename = f"{uuid.uuid4()}.{ext}"
+
+    # Upload to temporary registration folder
+    photo_url = await storage.upload_file(
+        photo,
+        folder="registration/photos",
+        filename=filename,
+    )
+
+    return {
+        "success": True,
+        "data": {
+            "id": str(uuid.uuid4()),
+            "url": photo_url,
+            "is_primary": is_primary,
+            "order": 0,
         },
     }
 
