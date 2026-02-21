@@ -8,6 +8,7 @@ import traceback
 from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
 from app.core.exceptions import AppException
+from app.core.redis import redis_pubsub
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG if settings.DEBUG else logging.INFO)
@@ -18,6 +19,7 @@ for noisy_logger in [
     "pymongo", "pymongo.topology", "pymongo.connection",
     "pymongo.command", "pymongo.serverSelection",
     "botocore", "boto3", "urllib3", "s3transfer",
+    "passlib", "passlib.utils", "passlib.registry",
 ]:
     logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
@@ -33,8 +35,17 @@ async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
     # Startup
     await connect_to_mongo()
+
+    # Connect to Redis for WebSocket pub/sub
+    from app.chat.websocket import handle_redis_message
+    await redis_pubsub.connect()
+    redis_pubsub.set_message_handler(handle_redis_message)
+    await redis_pubsub.start_listener()
+
     yield
+
     # Shutdown
+    await redis_pubsub.disconnect()
     await close_mongo_connection()
 
 
