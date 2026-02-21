@@ -213,7 +213,12 @@ class AuthService:
         if not user:
             raise ValidationError("Invalid or expired reset token")
 
-        if not user.password_reset_token_expires or user.password_reset_token_expires < datetime.now(timezone.utc):
+        # Handle both naive and timezone-aware datetimes from database
+        expires = user.password_reset_token_expires
+        now = datetime.now(timezone.utc)
+        if expires and expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if not expires or expires < now:
             raise TokenExpiredError("Reset token has expired")
 
         user.password_hash = get_password_hash(password)
@@ -236,7 +241,15 @@ class AuthService:
         if not user.verification_code or user.verification_code != code:
             raise ValidationError("Invalid verification code")
 
-        if user.verification_code_expires < datetime.now(timezone.utc):
+        # Check expiration - handle both naive and timezone-aware datetimes
+        expires = user.verification_code_expires
+        if expires is None:
+            raise TokenExpiredError("Verification code has expired")
+
+        now = datetime.now(timezone.utc)
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        if expires < now:
             raise TokenExpiredError("Verification code has expired")
 
         user.is_verified = True
