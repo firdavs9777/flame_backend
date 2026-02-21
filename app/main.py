@@ -13,12 +13,13 @@ from app.core.exceptions import AppException
 logging.basicConfig(level=logging.DEBUG if settings.DEBUG else logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Reduce pymongo verbosity (too noisy in DEBUG mode)
-logging.getLogger("pymongo").setLevel(logging.WARNING)
-logging.getLogger("pymongo.topology").setLevel(logging.WARNING)
-logging.getLogger("pymongo.connection").setLevel(logging.WARNING)
-logging.getLogger("pymongo.command").setLevel(logging.WARNING)
-logging.getLogger("pymongo.serverSelection").setLevel(logging.WARNING)
+# Reduce noisy third-party loggers
+for noisy_logger in [
+    "pymongo", "pymongo.topology", "pymongo.connection",
+    "pymongo.command", "pymongo.serverSelection",
+    "botocore", "boto3", "urllib3", "s3transfer",
+]:
+    logging.getLogger(noisy_logger).setLevel(logging.WARNING)
 
 from app.auth.routes import router as auth_router
 from app.community.routes import router as community_router
