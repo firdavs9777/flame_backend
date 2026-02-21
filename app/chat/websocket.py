@@ -20,6 +20,9 @@ class ConnectionManager:
 
     async def connect(self, websocket: WebSocket, user_id: str):
         """Accept and store a new WebSocket connection."""
+        print(f"[WS] ====== USER CONNECTING ======")
+        print(f"[WS] User ID: {user_id}")
+
         await websocket.accept()
         self.active_connections[user_id] = websocket
         self.user_conversations[user_id] = set()
@@ -30,21 +33,36 @@ class ConnectionManager:
             user.is_online = True
             user.last_active = datetime.now(timezone.utc)
             await user.save()
+            print(f"[WS] User {user.name} ({user_id}) online status updated")
 
         # Subscribe to user's conversations
+        print(f"[WS] Looking for conversations with user1_id={user_id} OR user2_id={user_id}")
         conversations = await Conversation.find(
             {"$or": [{"user1_id": user_id}, {"user2_id": user_id}]}
         ).to_list()
 
+        print(f"[WS] Found {len(conversations)} conversations for user {user_id}")
         for conv in conversations:
-            self.user_conversations[user_id].add(str(conv.id))
+            conv_id = str(conv.id)
+            self.user_conversations[user_id].add(conv_id)
+            print(f"[WS] - Subscribed to conversation: {conv_id} (user1={conv.user1_id}, user2={conv.user2_id})")
+
+        print(f"[WS] Final subscriptions for {user_id}: {self.user_conversations[user_id]}")
+        print(f"[WS] Total active connections: {list(self.active_connections.keys())}")
+        print(f"[WS] ====== CONNECTION COMPLETE ======")
 
     def disconnect(self, user_id: str):
         """Remove a WebSocket connection."""
+        print(f"[WS] ====== USER DISCONNECTING ======")
+        print(f"[WS] User ID: {user_id}")
         if user_id in self.active_connections:
             del self.active_connections[user_id]
+            print(f"[WS] Removed from active_connections")
         if user_id in self.user_conversations:
             del self.user_conversations[user_id]
+            print(f"[WS] Removed from user_conversations")
+        print(f"[WS] Remaining connections: {list(self.active_connections.keys())}")
+        print(f"[WS] ====== DISCONNECT COMPLETE ======")
 
     async def send_personal_message(self, message: dict, user_id: str):
         """Send a message to a specific user."""
@@ -120,6 +138,7 @@ async def websocket_endpoint(
 
             event = message.get("event")
             payload = message.get("data", {})
+            print(f"[WS] Received from {user_id}: event={event}, payload={payload}")
 
             if event == "ping":
                 # Respond to ping
@@ -364,3 +383,20 @@ async def notify_user_online(user_id: str, is_online: bool):
             },
             other_user_id,
         )
+
+
+# =============================================================================
+# Debug endpoint to check WebSocket state
+# =============================================================================
+
+@router.get("/ws/debug")
+async def websocket_debug():
+    """Debug endpoint to check WebSocket state."""
+    return {
+        "active_connections": list(manager.active_connections.keys()),
+        "user_subscriptions": {
+            user_id: list(convs)
+            for user_id, convs in manager.user_conversations.items()
+        },
+        "total_connections": len(manager.active_connections),
+    }

@@ -13,6 +13,13 @@ from app.core.exceptions import AppException
 logging.basicConfig(level=logging.DEBUG if settings.DEBUG else logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Reduce pymongo verbosity (too noisy in DEBUG mode)
+logging.getLogger("pymongo").setLevel(logging.WARNING)
+logging.getLogger("pymongo.topology").setLevel(logging.WARNING)
+logging.getLogger("pymongo.connection").setLevel(logging.WARNING)
+logging.getLogger("pymongo.command").setLevel(logging.WARNING)
+logging.getLogger("pymongo.serverSelection").setLevel(logging.WARNING)
+
 from app.auth.routes import router as auth_router
 from app.community.routes import router as community_router
 from app.chat.routes import router as chat_router, sticker_router
