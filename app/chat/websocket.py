@@ -56,9 +56,14 @@ class ConnectionManager:
         self, message: dict, conversation_id: str, exclude_user: Optional[str] = None
     ):
         """Broadcast a message to all users in a conversation."""
+        print(f"[WS] broadcast_to_conversation: conv={conversation_id}, exclude={exclude_user}")
         for user_id, conversations in self.user_conversations.items():
+            print(f"[WS] Checking user {user_id}: subscribed to {conversations}")
             if conversation_id in conversations and user_id != exclude_user:
+                print(f"[WS] Sending to user {user_id}")
                 await self.send_personal_message(message, user_id)
+            else:
+                print(f"[WS] Skipping user {user_id}: conv not in subscriptions or excluded")
 
     def is_user_online(self, user_id: str) -> bool:
         """Check if a user is connected."""
@@ -206,6 +211,10 @@ async def websocket_endpoint(
 
 async def notify_new_message(conversation_id: str, message: dict, sender_id: str):
     """Notify users in a conversation about a new message."""
+    print(f"[WS] notify_new_message: conversation={conversation_id}, sender={sender_id}")
+    print(f"[WS] Active connections: {list(manager.active_connections.keys())}")
+    print(f"[WS] User subscriptions: {manager.user_conversations}")
+
     await manager.broadcast_to_conversation(
         {
             "event": "new_message",
