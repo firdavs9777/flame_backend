@@ -64,6 +64,11 @@ class ConnectionManager:
         """Check if a user is connected."""
         return user_id in self.active_connections
 
+    def subscribe_to_conversation(self, user_id: str, conversation_id: str):
+        """Subscribe a user to a conversation."""
+        if user_id in self.user_conversations:
+            self.user_conversations[user_id].add(conversation_id)
+
 
 # Global connection manager
 manager = ConnectionManager()
@@ -165,6 +170,22 @@ async def websocket_endpoint(
                         exclude_user=user_id,
                     )
 
+            elif event == "recording_voice":
+                # User is recording voice message
+                conversation_id = payload.get("conversation_id")
+                if conversation_id:
+                    await manager.broadcast_to_conversation(
+                        {
+                            "event": "user_recording_voice",
+                            "data": {
+                                "conversation_id": conversation_id,
+                                "user_id": user_id,
+                            },
+                        },
+                        conversation_id,
+                        exclude_user=user_id,
+                    )
+
     except WebSocketDisconnect:
         manager.disconnect(user_id)
 
@@ -179,7 +200,10 @@ async def websocket_endpoint(
         manager.disconnect(user_id)
 
 
+# =============================================================================
 # Helper functions to be called from other parts of the app
+# =============================================================================
+
 async def notify_new_message(conversation_id: str, message: dict, sender_id: str):
     """Notify users in a conversation about a new message."""
     await manager.broadcast_to_conversation(
@@ -195,14 +219,123 @@ async def notify_new_message(conversation_id: str, message: dict, sender_id: str
     )
 
 
-async def notify_new_match(user_id: str, match_data: dict):
-    """Notify a user about a new match."""
+async def notify_new_match(user_id: str, match_data: dict, conversation_id: str = None):
+    """Notify a user about a new match and subscribe them to the conversation."""
+    # Subscribe both users to the new conversation if provided
+    if conversation_id:
+        # Subscribe the notified user
+        if user_id in manager.user_conversations:
+            manager.user_conversations[user_id].add(conversation_id)
+
+        # Also subscribe the other user (from match_data)
+        other_user_id = match_data.get("user", {}).get("id")
+        if other_user_id and other_user_id in manager.user_conversations:
+            manager.user_conversations[other_user_id].add(conversation_id)
+
     await manager.send_personal_message(
         {
             "event": "new_match",
             "data": match_data,
         },
         user_id,
+    )
+
+
+async def notify_message_edited(conversation_id: str, message: dict, editor_id: str):
+    """Notify users about an edited message."""
+    await manager.broadcast_to_conversation(
+        {
+            "event": "message_edited",
+            "data": {
+                "conversation_id": conversation_id,
+                "message": message,
+            },
+        },
+        conversation_id,
+        exclude_user=editor_id,
+    )
+
+
+async def notify_message_deleted(conversation_id: str, message_id: str, deleter_id: str):
+    """Notify users about a deleted message."""
+    await manager.broadcast_to_conversation(
+        {
+            "event": "message_deleted",
+            "data": {
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+            },
+        },
+        conversation_id,
+        exclude_user=deleter_id,
+    )
+
+
+async def notify_reaction_added(
+    conversation_id: str, message_id: str, emoji: str, user_id: str
+):
+    """Notify users about a new reaction."""
+    await manager.broadcast_to_conversation(
+        {
+            "event": "reaction_added",
+            "data": {
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "emoji": emoji,
+                "user_id": user_id,
+            },
+        },
+        conversation_id,
+        exclude_user=user_id,
+    )
+
+
+async def notify_reaction_removed(conversation_id: str, message_id: str, user_id: str):
+    """Notify users about a removed reaction."""
+    await manager.broadcast_to_conversation(
+        {
+            "event": "reaction_removed",
+            "data": {
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "user_id": user_id,
+            },
+        },
+        conversation_id,
+        exclude_user=user_id,
+    )
+
+
+async def notify_message_pinned(conversation_id: str, message_id: str, pinner_id: str):
+    """Notify users about a pinned message."""
+    await manager.broadcast_to_conversation(
+        {
+            "event": "message_pinned",
+            "data": {
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "pinned_by": pinner_id,
+            },
+        },
+        conversation_id,
+        exclude_user=pinner_id,
+    )
+
+
+async def notify_message_unpinned(
+    conversation_id: str, message_id: str, unpinner_id: str
+):
+    """Notify users about an unpinned message."""
+    await manager.broadcast_to_conversation(
+        {
+            "event": "message_unpinned",
+            "data": {
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+            },
+        },
+        conversation_id,
+        exclude_user=unpinner_id,
     )
 
 

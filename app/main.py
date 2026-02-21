@@ -2,14 +2,20 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+import logging
+import traceback
 
 from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
 from app.core.exceptions import AppException
 
+# Configure logging
+logging.basicConfig(level=logging.DEBUG if settings.DEBUG else logging.INFO)
+logger = logging.getLogger(__name__)
+
 from app.auth.routes import router as auth_router
 from app.community.routes import router as community_router
-from app.chat.routes import router as chat_router
+from app.chat.routes import router as chat_router, sticker_router
 from app.chat.websocket import router as ws_router
 
 
@@ -62,13 +68,21 @@ async def app_exception_handler(request: Request, exc: AppException):
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle general exceptions."""
+    # Log the actual error for debugging
+    logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
+    logger.error(traceback.format_exc())
+
+    # In debug mode, show the actual error message
+    error_message = str(exc) if settings.DEBUG else "Internal server error"
+
     return JSONResponse(
         status_code=500,
         content={
             "success": False,
             "error": {
                 "code": "SERVER_ERROR",
-                "message": "Internal server error",
+                "message": error_message,
+                "details": traceback.format_exc() if settings.DEBUG else None,
             },
         },
     )
@@ -85,6 +99,7 @@ async def health_check():
 app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
 app.include_router(community_router, prefix=settings.API_V1_PREFIX)
 app.include_router(chat_router, prefix=settings.API_V1_PREFIX)
+app.include_router(sticker_router, prefix=settings.API_V1_PREFIX)
 app.include_router(ws_router)
 
 

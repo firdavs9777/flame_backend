@@ -43,6 +43,8 @@ class RegisterRequest(BaseModel):
     bio: Optional[str] = Field(default=None, max_length=500)
     interests: List[str] = Field(min_length=1, max_length=10)
     photos: List[str] = Field(min_length=1, max_length=6)
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
 
     @field_validator("password")
     @classmethod

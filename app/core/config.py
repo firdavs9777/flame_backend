@@ -41,8 +41,10 @@ class Settings(BaseSettings):
     DO_SPACES_KEY: str = ""
     DO_SPACES_SECRET: str = ""
     SPACES_BUCKET: str = "my-projects-media"
+    SPACES_REGION: str = "sfo3"
     SPACES_ENDPOINT: str = "sfo3.digitaloceanspaces.com"
     SPACES_CDN_URL: str = "https://my-projects-media.sfo3.cdn.digitaloceanspaces.com"
+    SPACES_PROJECT_FOLDER: str = "flame_backend"  # Project-specific folder prefix
 
     # Email - Mailgun
     MAILGUN_API_KEY: str = ""
