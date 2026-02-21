@@ -17,6 +17,7 @@ from app.auth.routes import router as auth_router
 from app.community.routes import router as community_router
 from app.chat.routes import router as chat_router, sticker_router
 from app.chat.websocket import router as ws_router
+from app.users.routes import router as users_router
 
 
 @asynccontextmanager
@@ -97,6 +98,7 @@ async def health_check():
 
 # Include routers
 app.include_router(auth_router, prefix=settings.API_V1_PREFIX)
+app.include_router(users_router, prefix=settings.API_V1_PREFIX)
 app.include_router(community_router, prefix=settings.API_V1_PREFIX)
 app.include_router(chat_router, prefix=settings.API_V1_PREFIX)
 app.include_router(sticker_router, prefix=settings.API_V1_PREFIX)
