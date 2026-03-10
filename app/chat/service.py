@@ -1,4 +1,4 @@
-from typing import List, Optional, Tuple
+from typing import List, Optional, Tuple, Dict, Any
 from datetime import datetime, timezone, timedelta
 from bson import ObjectId
 from app.models.user import User
@@ -7,6 +7,7 @@ from app.models.message import Message, MessageType, MessageStatus, Reaction, Re
 from app.models.match import Match
 from app.models.sticker import Sticker, StickerPack, UserStickerPack, RecentSticker
 from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError
+from app.core.database import get_database
 
 
 class ChatService:
@@ -16,23 +17,62 @@ class ChatService:
         limit: int = 20,
         offset: int = 0,
     ) -> Tuple[List[dict], int]:
-        """Get user's conversations."""
+        """
+        Get user's conversations.
+
+        OPTIMIZED:
+        - Uses database-level pagination instead of in-memory
+        - Batch fetches all other users in single query (fixes N+1 problem)
+        - Reduces from N+1 queries to just 2 queries
+        """
+        user_id = str(user.id)
+        db = get_database()
+
+        # Build the query filter
         query = {
             "$or": [
-                {"user1_id": str(user.id)},
-                {"user2_id": str(user.id)},
+                {"user1_id": user_id},
+                {"user2_id": user_id},
             ]
         }
 
-        conversations = await Conversation.find(query).sort(-Conversation.updated_at).to_list()
+        # Get total count first (for pagination info)
+        total = await Conversation.find(query).count()
 
-        results = []
+        # Get paginated conversations from database (not in-memory!)
+        conversations = await Conversation.find(query).sort(
+            -Conversation.updated_at
+        ).skip(offset).limit(limit).to_list()
+
+        if not conversations:
+            return [], total
+
+        # Collect all other user IDs
+        other_user_ids = []
         for conv in conversations:
-            other_user_id = conv.get_other_user_id(str(user.id))
-            other_user = await User.get(other_user_id)
+            other_id = conv.user2_id if conv.user1_id == user_id else conv.user1_id
+            other_user_ids.append(other_id)
+
+        # Batch fetch all users in ONE query (fixes N+1 problem)
+        other_users = await User.find({
+            "_id": {"$in": [ObjectId(uid) for uid in other_user_ids]}
+        }).to_list()
+
+        # Create lookup map for O(1) access
+        user_map: Dict[str, User] = {str(u.id): u for u in other_users}
+
+        # Build results
+        results = []
+        now = datetime.now(timezone.utc)
+
+        for conv in conversations:
+            other_id = conv.user2_id if conv.user1_id == user_id else conv.user1_id
+            other_user = user_map.get(other_id)
+
             if not other_user:
                 continue
 
+            # Build last message info from cached data
             last_message = None
             if conv.last_message_id:
                 last_message = {
@@ -46,28 +86,25 @@ class ChatService:
             # Check mute status
             is_muted = False
             muted_until = None
-            if str(user.id) == conv.user1_id and conv.user1_muted_until:
-                if conv.user1_muted_until > datetime.now(timezone.utc):
+            if user_id == conv.user1_id and conv.user1_muted_until:
+                if conv.user1_muted_until > now:
                     is_muted = True
                     muted_until = conv.user1_muted_until.isoformat()
-            elif str(user.id) == conv.user2_id and conv.user2_muted_until:
-                if conv.user2_muted_until > datetime.now(timezone.utc):
+            elif user_id == conv.user2_id and conv.user2_muted_until:
+                if conv.user2_muted_until > now:
                     is_muted = True
                     muted_until = conv.user2_muted_until.isoformat()
 
             results.append({
                 "conversation": conv,
                 "other_user": other_user,
-                "unread_count": conv.get_unread_count(str(user.id)),
+                "unread_count": conv.get_unread_count(user_id),
                 "last_message": last_message,
                 "is_muted": is_muted,
                 "muted_until": muted_until,
             })
 
-        total = len(results)
-        paginated = results[offset : offset + limit]
-
-        return paginated, total
+        return results, total
 
     @staticmethod
     async def get_conversation(conversation_id: str, user: User) -> Conversation:
@@ -88,22 +125,30 @@ class ChatService:
         limit: int = 50,
         before: Optional[str] = None,
     ) -> Tuple[List[Message], bool]:
-        """Get messages in a conversation."""
+        """
+        Get messages in a conversation.
+
+        OPTIMIZED:
+        - Uses cursor-based pagination with _id (more efficient than timestamp)
+        - _id contains timestamp info and is indexed by default
+        - Eliminates extra query to fetch 'before' message
+        """
         conv = await ChatService.get_conversation(conversation_id, user)
 
-        query = {
+        query: Dict[str, Any] = {
             "conversation_id": str(conv.id),
-            "is_deleted": {"$ne": True}  # Exclude deleted messages
+            "is_deleted": {"$ne": True}
         }
 
+        # Cursor-based pagination using _id (more efficient)
         if before:
-            before_msg = await Message.get(before)
-            if before_msg:
-                query["timestamp"] = {"$lt": before_msg.timestamp}
+            # Validate ObjectId format
+            if ObjectId.is_valid(before):
+                query["_id"] = {"$lt": ObjectId(before)}
 
         messages = (
             await Message.find(query)
-            .sort(-Message.timestamp)
+            .sort([("_id", -1)])  # Sort by _id descending (newest first)
             .limit(limit + 1)
             .to_list()
         )
@@ -112,7 +157,7 @@ class ChatService:
         if has_more:
             messages = messages[:limit]
 
-        # Reverse to get chronological order
+        # Reverse to get chronological order (oldest to newest)
         messages.reverse()
 
         return messages, has_more
@@ -372,23 +417,55 @@ class ChatService:
     async def mark_messages_read(
         conversation_id: str,
         user: User,
-        message_ids: List[str],
+        message_ids: Optional[List[str]] = None,
+        mark_all: bool = False,
     ):
-        """Mark messages as read."""
-        conv = await ChatService.get_conversation(conversation_id, user)
+        """
+        Mark messages as read.
 
-        # Update message statuses (convert string IDs to ObjectId)
-        object_ids = [ObjectId(mid) for mid in message_ids if ObjectId.is_valid(mid)]
-        if object_ids:
-            await Message.find({
-                "conversation_id": str(conv.id),
-                "_id": {"$in": object_ids},
-                "sender_id": {"$ne": str(user.id)}
-            }).update({"$set": {"status": MessageStatus.READ.value}})
+        OPTIMIZED:
+        - Supports marking all unread messages in one operation
+        - Uses bulk update with update_many for efficiency
+        - Single database operation instead of per-message updates
+
+        Args:
+            conversation_id: The conversation ID
+            user: The current user
+            message_ids: Optional list of specific message IDs to mark
+            mark_all: If True, marks ALL unread messages as read
+        """
+        conv = await ChatService.get_conversation(conversation_id, user)
+        user_id = str(user.id)
+
+        # Build base query - only messages from OTHER user that aren't already read
+        query: Dict[str, Any] = {
+            "conversation_id": str(conv.id),
+            "sender_id": {"$ne": user_id},
+            "status": {"$ne": MessageStatus.READ.value}
+        }
+
+        if not mark_all and message_ids:
+            # Mark specific messages
+            object_ids = [ObjectId(mid) for mid in message_ids if ObjectId.is_valid(mid)]
+            if object_ids:
+                query["_id"] = {"$in": object_ids}
+        elif not mark_all:
+            # No messages specified and not mark_all, nothing to do
+            return
+
+        # Bulk update all matching messages in one operation
+        result = await Message.find(query).update_many({
+            "$set": {
+                "status": MessageStatus.READ.value,
+                "read_at": datetime.now(timezone.utc)
+            }
+        })
 
         # Reset unread count
-        conv.reset_unread(str(user.id))
+        conv.reset_unread(user_id)
         await conv.save()
+
+        return result.modified_count if result else 0
 
     @staticmethod
     async def get_conversation_by_match(match_id: str, user: User) -> Optional[Conversation]:

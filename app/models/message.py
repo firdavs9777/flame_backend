@@ -82,11 +82,19 @@ class Message(Document):
     is_deleted: bool = False
     deleted_at: Optional[datetime] = None
 
+    # Read tracking
+    read_at: Optional[datetime] = None
+
     class Settings:
         name = "messages"
         indexes = [
+            # Single field indexes
             "conversation_id",
             "sender_id",
-            [("conversation_id", 1), ("timestamp", -1)],
-            [("conversation_id", 1), ("is_deleted", 1)],
+            # Compound indexes for common queries
+            [("conversation_id", 1), ("timestamp", -1)],  # Get messages sorted by time
+            [("conversation_id", 1), ("is_deleted", 1)],  # Filter deleted messages
+            [("conversation_id", 1), ("_id", -1)],  # Cursor-based pagination (most efficient)
+            [("conversation_id", 1), ("status", 1)],  # Query unread messages
+            [("conversation_id", 1), ("sender_id", 1), ("status", 1)],  # Mark read optimization
         ]

@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.core.database import connect_to_mongo, close_mongo_connection
 from app.core.exceptions import AppException
 from app.core.redis import redis_pubsub
+from app.core.cache import cache
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG if settings.DEBUG else logging.INFO)
@@ -34,7 +35,9 @@ from app.users.routes import router as users_router
 async def lifespan(app: FastAPI):
     """Handle startup and shutdown events."""
     # Startup
+    logger.info("Starting up Flame API...")
     await connect_to_mongo()
+    logger.info("MongoDB connected")
 
     # Connect to Redis for WebSocket pub/sub
     from app.chat.websocket import handle_redis_message
@@ -42,11 +45,24 @@ async def lifespan(app: FastAPI):
     redis_pubsub.set_message_handler(handle_redis_message)
     await redis_pubsub.start_listener()
 
+    # Connect to Redis cache (optional - app works without it)
+    try:
+        await cache.connect()
+        if cache.is_connected():
+            logger.info("Redis cache connected")
+        else:
+            logger.warning("Redis cache not available - running without cache")
+    except Exception as e:
+        logger.warning(f"Redis connection failed: {e} - running without cache")
+
     yield
 
     # Shutdown
+    logger.info("Shutting down Flame API...")
     await redis_pubsub.disconnect()
+    await cache.disconnect()
     await close_mongo_connection()
+    logger.info("Shutdown complete")
 
 
 # Create FastAPI app
@@ -113,6 +129,39 @@ async def general_exception_handler(request: Request, exc: Exception):
 async def health_check():
     """Health check endpoint."""
     return {"status": "healthy", "version": settings.APP_VERSION}
+
+
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """Detailed health check with component status."""
+    from app.core.database import db
+
+    health = {
+        "status": "healthy",
+        "version": settings.APP_VERSION,
+        "components": {}
+    }
+
+    # Check MongoDB
+    try:
+        await db.client.admin.command('ping')
+        health["components"]["mongodb"] = {"status": "healthy"}
+    except Exception as e:
+        health["status"] = "degraded"
+        health["components"]["mongodb"] = {"status": "unhealthy", "error": str(e)}
+
+    # Check Redis
+    if cache.is_connected():
+        try:
+            await cache.redis.ping()
+            health["components"]["redis"] = {"status": "healthy"}
+        except Exception as e:
+            health["status"] = "degraded"
+            health["components"]["redis"] = {"status": "unhealthy", "error": str(e)}
+    else:
+        health["components"]["redis"] = {"status": "not_connected", "note": "Running without cache"}
+
+    return health
 
 
 # Include routers
