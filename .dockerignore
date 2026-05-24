@@ -1,9 +1,10 @@
 venv/
-__pycache__/
-*.pyc
-*.pyo
+**/__pycache__/
+**/*.pyc
+**/*.pyo
 .env
 .git/
 .github/
 docs/
 *.md
+tests/
