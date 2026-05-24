@@ -188,6 +188,7 @@ class SocialAuthService:
                 algorithms=["RS256"],
                 audience=settings.GOOGLE_CLIENT_ID,
                 issuer=["https://accounts.google.com", "accounts.google.com"],
+                options={"verify_at_hash": False},
             )
             return payload
         except Exception as e:
