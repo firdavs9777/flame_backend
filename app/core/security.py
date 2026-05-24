@@ -63,14 +63,12 @@ def decode_token(token: str) -> Optional[dict[str, Any]]:
 
 def generate_verification_code() -> str:
     """Generate a 6-digit verification code."""
-    import random
-    return str(random.randint(100000, 999999))
+    return str(secrets.randbelow(900000) + 100000)
 
 
 def generate_password_reset_code() -> str:
     """Generate a 6-digit password reset code."""
-    import random
-    return str(random.randint(100000, 999999))
+    return str(secrets.randbelow(900000) + 100000)
 
 
 def generate_verification_token() -> str:

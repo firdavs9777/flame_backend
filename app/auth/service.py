@@ -162,24 +162,16 @@ class AuthService:
         return await AuthService._create_tokens(user_id)
 
     @staticmethod
-    async def logout(user_id: str, refresh_token: Optional[str] = None):
-        """Logout user and invalidate tokens."""
-        # Update user status
+    async def logout(user_id: str):
+        """Logout user and invalidate all refresh tokens."""
         user = await User.get(user_id)
         if user:
             user.is_online = False
             await user.save()
 
-        # Revoke refresh token if provided
-        if refresh_token:
-            payload = decode_token(refresh_token)
-            if payload and payload.get("jti"):
-                token_record = await RefreshToken.find_one(
-                    RefreshToken.token_jti == payload["jti"]
-                )
-                if token_record:
-                    token_record.is_revoked = True
-                    await token_record.save()
+        await RefreshToken.find(RefreshToken.user_id == user_id).update(
+            {"$set": {"is_revoked": True}}
+        )
 
     @staticmethod
     async def forgot_password(email: str):
@@ -235,11 +227,8 @@ class AuthService:
     async def verify_email(email: str, code: str):
         """Verify user email with 6-digit code."""
         user = await User.find_one(User.email == email)
-        if not user:
-            raise NotFoundError("User not found")
-
-        if not user.verification_code or user.verification_code != code:
-            raise ValidationError("Invalid verification code")
+        if not user or not user.verification_code or user.verification_code != code:
+            raise ValidationError("Invalid email or verification code")
 
         # Check expiration - handle both naive and timezone-aware datetimes
         expires = user.verification_code_expires

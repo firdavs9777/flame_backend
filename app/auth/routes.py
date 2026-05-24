@@ -71,22 +71,31 @@ async def register(data: RegisterRequest):
     }
 
 
+ALLOWED_PHOTO_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
+MAX_REGISTRATION_PHOTO_SIZE = 10 * 1024 * 1024  # 10MB
+
+
 @router.post("/upload-photo", status_code=status.HTTP_201_CREATED)
 async def upload_photo_for_registration(
     photo: UploadFile = File(...),
     is_primary: bool = False,
 ):
-    """
-    Upload a photo for registration (before user account exists).
-    Photos are stored in a temporary folder and URL is returned.
-    """
+    """Upload a photo for registration (before user account exists)."""
     from app.core.storage import storage
+    from app.core.exceptions import ValidationError
 
-    # Generate unique filename
-    ext = photo.filename.split(".")[-1] if photo.filename else "jpg"
+    if photo.content_type not in ALLOWED_PHOTO_CONTENT_TYPES:
+        raise ValidationError("Only JPEG, PNG, and WebP images are allowed")
+
+    contents = await photo.read()
+    if len(contents) > MAX_REGISTRATION_PHOTO_SIZE:
+        raise ValidationError("Photo must be under 10MB")
+    await photo.seek(0)
+
+    ext_map = {"image/jpeg": "jpg", "image/png": "png", "image/webp": "webp"}
+    ext = ext_map[photo.content_type]
     filename = f"{uuid.uuid4()}.{ext}"
 
-    # Upload to temporary registration folder
     photo_url = await storage.upload_file(
         photo,
         folder="registration/photos",

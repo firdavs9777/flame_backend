@@ -213,13 +213,22 @@ class SocialAuthService:
         """Verify Facebook access token and return user info."""
         try:
             async with httpx.AsyncClient() as client:
-                # Get user info from Facebook
+                # Verify the token was issued for our app
+                app_token = f"{settings.FACEBOOK_APP_ID}|{settings.FACEBOOK_APP_SECRET}"
+                debug_response = await client.get(
+                    "https://graph.facebook.com/debug_token",
+                    params={"input_token": access_token, "access_token": app_token},
+                )
+                if debug_response.status_code != 200:
+                    return None
+                debug_data = debug_response.json().get("data", {})
+                if not debug_data.get("is_valid") or str(debug_data.get("app_id")) != settings.FACEBOOK_APP_ID:
+                    return None
+
+                # Fetch user info
                 response = await client.get(
                     "https://graph.facebook.com/me",
-                    params={
-                        "access_token": access_token,
-                        "fields": "id,name,email,picture",
-                    },
+                    params={"access_token": access_token, "fields": "id,name,email,picture"},
                 )
                 if response.status_code == 200:
                     return response.json()

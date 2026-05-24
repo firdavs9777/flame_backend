@@ -1,6 +1,7 @@
 from motor.motor_asyncio import AsyncIOMotorClient
 from beanie import init_beanie
 from app.core.config import settings
+import certifi
 
 
 class Database:
@@ -12,7 +13,7 @@ db = Database()
 
 async def connect_to_mongo():
     """Create database connection."""
-    db.client = AsyncIOMotorClient(settings.MONGODB_URL)
+    db.client = AsyncIOMotorClient(settings.MONGODB_URL, tlsCAFile=certifi.where())
 
     # Import models here to avoid circular imports
     from app.models.user import User
