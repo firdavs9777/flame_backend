@@ -161,18 +161,27 @@ class SocialAuthService:
 
     @staticmethod
     async def _verify_google_token(id_token: str) -> Optional[dict]:
-        """Verify Google ID token and return user info."""
+        """Verify Google ID token locally against Google's published JWKs."""
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"https://oauth2.googleapis.com/tokeninfo?id_token={id_token}"
-                )
-                if response.status_code == 200:
-                    data = response.json()
-                    # Verify audience matches our client ID
-                    if data.get("aud") == settings.GOOGLE_CLIENT_ID:
-                        return data
+            header = jwt.get_unverified_header(id_token)
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get("https://www.googleapis.com/oauth2/v3/certs")
+                if response.status_code != 200:
+                    return None
+                keys = response.json().get("keys", [])
+
+            key = next((k for k in keys if k.get("kid") == header.get("kid")), None)
+            if not key:
                 return None
+
+            payload = jwt.decode(
+                id_token,
+                key,
+                algorithms=["RS256"],
+                audience=settings.GOOGLE_CLIENT_ID,
+                issuer=["https://accounts.google.com", "accounts.google.com"],
+            )
+            return payload
         except Exception:
             return None
 

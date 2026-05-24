@@ -1,36 +1,35 @@
 from typing import List, Optional, Tuple
-from datetime import datetime, timezone, timedelta
-from math import radians, cos, sin, asin, sqrt
-from app.models.user import User, Photo, Location, Coordinates
+from datetime import datetime, timezone
+from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
+from app.models.user import User, Photo, Location, Coordinates, GeoPoint
 from app.models.swipe import Swipe, SwipeType
 from app.models.match import Match
 from app.models.block import Block
 from app.models.report import Report
 from app.models.conversation import Conversation
+from app.models.message import Message
+from app.models.refresh_token import RefreshToken
+from app.models.device import Device
+from app.models.subscription import Subscription, SubscriptionStatus
 from app.core.exceptions import NotFoundError, ValidationError, ForbiddenError
 from app.core.security import verify_password
+from app.core.database import get_database
 
-
-def haversine(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
-    """Calculate the distance between two points on Earth in miles."""
-    lon1, lat1, lon2, lat2 = map(radians, [lon1, lat1, lon2, lat2])
-    dlon = lon2 - lon1
-    dlat = lat2 - lat1
-    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlon / 2) ** 2
-    c = 2 * asin(sqrt(a))
-    r = 3956  # Radius of Earth in miles
-    return c * r
+MILES_PER_METER = 0.000621371
 
 
 class UserService:
     @staticmethod
     async def get_user_by_id(user_id: str, requester: User) -> User:
         """Get a user by ID with privacy filtering."""
-        user = await User.get(user_id)
-        if not user:
+        try:
+            user = await User.get(user_id)
+        except Exception:
+            raise NotFoundError("User not found")
+        if not user or user.is_deleted:
             raise NotFoundError("User not found")
 
-        # Check if blocked
         is_blocked = await Block.find_one({"$or": [
             {"blocker_id": str(requester.id), "blocked_id": user_id},
             {"blocker_id": user_id, "blocked_id": str(requester.id)}
@@ -42,9 +41,10 @@ class UserService:
 
     @staticmethod
     async def update_profile(user: User, data: dict) -> User:
-        """Update user profile."""
+        """Update user profile — schema-bounded fields only."""
+        allowed = {"name", "bio", "interests", "looking_for"}
         for key, value in data.items():
-            if value is not None and hasattr(user, key):
+            if key in allowed and value is not None:
                 setattr(user, key, value)
 
         user.updated_at = datetime.now(timezone.utc)
@@ -53,28 +53,29 @@ class UserService:
 
     @staticmethod
     async def update_location(user: User, latitude: float, longitude: float) -> User:
-        """Update user location with reverse geocoding."""
-        from app.core.location import location_service
-
-        # Reverse geocode to get city/state/country
-        city, state, country = await location_service.reverse_geocode(latitude, longitude)
-
+        """Update user location. Reverse geocoding happens in background."""
+        # Set coordinates immediately so discovery works without waiting on Nominatim
         user.location = Location(
-            city=city,
-            state=state,
-            country=country,
+            city=user.location.city if user.location else None,
+            state=user.location.state if user.location else None,
+            country=user.location.country if user.location else None,
             coordinates=Coordinates(latitude=latitude, longitude=longitude),
         )
+        # GeoJSON shape — [lng, lat] order for 2dsphere
+        user.location_geo = GeoPoint(coordinates=[longitude, latitude])
         user.updated_at = datetime.now(timezone.utc)
         await user.save()
         return user
 
     @staticmethod
     async def update_preferences(user: User, data: dict) -> User:
-        """Update user preferences."""
+        allowed = {"min_age", "max_age", "max_distance", "show_distance", "show_online_status"}
         for key, value in data.items():
-            if value is not None and hasattr(user.preferences, key):
+            if key in allowed and value is not None and hasattr(user.preferences, key):
                 setattr(user.preferences, key, value)
+
+        if user.preferences.min_age > user.preferences.max_age:
+            raise ValidationError("min_age cannot exceed max_age")
 
         user.updated_at = datetime.now(timezone.utc)
         await user.save()
@@ -82,9 +83,9 @@ class UserService:
 
     @staticmethod
     async def update_notification_settings(user: User, data: dict) -> User:
-        """Update notification settings."""
+        allowed = {"new_matches", "new_messages", "super_likes", "promotions"}
         for key, value in data.items():
-            if value is not None and hasattr(user.notification_settings, key):
+            if key in allowed and value is not None and hasattr(user.notification_settings, key):
                 setattr(user.notification_settings, key, value)
 
         user.updated_at = datetime.now(timezone.utc)
@@ -93,29 +94,21 @@ class UserService:
 
     @staticmethod
     async def add_photo(user: User, photo_url: str, is_primary: bool = False) -> Photo:
-        """Add a photo to user profile."""
         if len(user.photos) >= 6:
             raise ValidationError("Maximum 6 photos allowed")
 
         photo_id = f"photo_{len(user.photos) + 1}_{int(datetime.now(timezone.utc).timestamp())}"
         order = len(user.photos)
 
-        # If this is the first photo or marked as primary, update other photos
         if is_primary or len(user.photos) == 0:
             for p in user.photos:
                 p.is_primary = False
             is_primary = True
             order = 0
-            # Shift other photos
             for p in user.photos:
                 p.order += 1
 
-        photo = Photo(
-            id=photo_id,
-            url=photo_url,
-            is_primary=is_primary,
-            order=order,
-        )
+        photo = Photo(id=photo_id, url=photo_url, is_primary=is_primary, order=order)
         user.photos.append(photo)
         user.updated_at = datetime.now(timezone.utc)
         await user.save()
@@ -123,43 +116,40 @@ class UserService:
 
     @staticmethod
     async def delete_photo(user: User, photo_id: str):
-        """Delete a photo from user profile."""
         if len(user.photos) <= 1:
             raise ValidationError("Must have at least one photo")
 
-        photo_to_delete = None
-        for p in user.photos:
-            if p.id == photo_id:
-                photo_to_delete = p
-                break
-
+        photo_to_delete = next((p for p in user.photos if p.id == photo_id), None)
         if not photo_to_delete:
             raise NotFoundError("Photo not found")
 
-        user.photos.remove(photo_to_delete)
+        # Delete underlying storage object
+        from app.core.storage import storage
+        try:
+            await storage.delete_file(photo_to_delete.url)
+        except Exception:
+            pass  # best-effort; user wants the photo gone from the profile
 
-        # Reorder remaining photos
+        user.photos.remove(photo_to_delete)
         for i, p in enumerate(user.photos):
             p.order = i
-            if i == 0:
-                p.is_primary = True
+            p.is_primary = (i == 0)
 
         user.updated_at = datetime.now(timezone.utc)
         await user.save()
 
     @staticmethod
     async def reorder_photos(user: User, photo_ids: List[str]) -> List[Photo]:
-        """Reorder user photos."""
         if len(photo_ids) != len(user.photos):
             raise ValidationError("Must include all photo IDs")
+        if len(set(photo_ids)) != len(photo_ids):
+            raise ValidationError("Duplicate photo IDs in order list")
 
         photo_map = {p.id: p for p in user.photos}
-
         for photo_id in photo_ids:
             if photo_id not in photo_map:
                 raise ValidationError(f"Photo {photo_id} not found")
 
-        # Reorder
         new_photos = []
         for i, photo_id in enumerate(photo_ids):
             photo = photo_map[photo_id]
@@ -174,34 +164,75 @@ class UserService:
 
     @staticmethod
     async def delete_account(user: User, password: str, reason: Optional[str] = None):
-        """Delete user account."""
-        # Verify password (skip for social auth users)
+        """Soft-delete account and purge all related data."""
         if user.password_hash and not verify_password(password, user.password_hash):
             raise ForbiddenError("Invalid password")
 
-        # Delete related data
+        user_id = str(user.id)
+        from app.core.storage import storage
+
+        # Delete photos from object storage (best-effort)
+        for p in user.photos:
+            try:
+                await storage.delete_file(p.url)
+            except Exception:
+                pass
+
+        # Purge swipes, blocks, reports authored by this user
         await Swipe.find({"$or": [
-            {"swiper_id": str(user.id)},
-            {"swiped_id": str(user.id)}
+            {"swiper_id": user_id}, {"swiped_id": user_id}
         ]}).delete()
-
-        await Match.find({"$or": [
-            {"user1_id": str(user.id)},
-            {"user2_id": str(user.id)}
-        ]}).delete()
-
-        await Conversation.find({"$or": [
-            {"user1_id": str(user.id)},
-            {"user2_id": str(user.id)}
-        ]}).delete()
-
         await Block.find({"$or": [
-            {"blocker_id": str(user.id)},
-            {"blocked_id": str(user.id)}
+            {"blocker_id": user_id}, {"blocked_id": user_id}
         ]}).delete()
+        await Report.find({"reporter_id": user_id}).delete()
 
-        # Delete user
-        await user.delete()
+        # Deactivate matches & conversations (keep messages for moderation/legal hold)
+        await Match.find({"$or": [
+            {"user1_id": user_id}, {"user2_id": user_id}
+        ]}).update({"$set": {"is_active": False}})
+        await Conversation.find({"$or": [
+            {"user1_id": user_id}, {"user2_id": user_id}
+        ]}).update({"$set": {"is_active": False, "closed_reason": "deleted_account"}})
+
+        # Revoke auth + devices
+        await RefreshToken.find(RefreshToken.user_id == user_id).update(
+            {"$set": {"is_revoked": True}}
+        )
+        await Device.find(Device.user_id == user_id).delete()
+
+        # Cancel subscriptions
+        await Subscription.find(Subscription.user_id == user_id).update(
+            {"$set": {"status": SubscriptionStatus.CANCELLED.value, "cancelled_at": datetime.now(timezone.utc)}}
+        )
+
+        # Soft delete: keep the user row so reports referencing them still resolve.
+        user.is_deleted = True
+        user.deleted_at = datetime.now(timezone.utc)
+        user.is_online = False
+        user.email = f"deleted_{user_id}@deleted.local"
+        user.name = "Deleted user"
+        user.bio = None
+        user.interests = ["deleted"]
+        user.photos = []
+        user.location = None
+        user.location_geo = None
+        user.password_hash = ""
+        user.google_id = None
+        user.apple_id = None
+        user.facebook_id = None
+        user.verification_code = None
+        user.password_reset_token = None
+        await user.save()
+
+
+def _haversine_miles(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    from math import radians, cos, sin, asin, sqrt
+    lat1, lng1, lat2, lng2 = map(radians, [lat1, lng1, lat2, lng2])
+    dlat = lat2 - lat1
+    dlng = lng2 - lng1
+    a = sin(dlat / 2) ** 2 + cos(lat1) * cos(lat2) * sin(dlng / 2) ** 2
+    return 2 * asin(sqrt(a)) * 3956
 
 
 class DiscoveryService:
@@ -210,230 +241,236 @@ class DiscoveryService:
         user: User,
         limit: int = 10,
         offset: int = 0,
-    ) -> Tuple[List[User], int]:
-        """Get potential matches for user based on preferences."""
-        # Get users who we've already swiped on
-        swiped = await Swipe.find(Swipe.swiper_id == str(user.id)).to_list()
-        swiped_ids = [s.swiped_id for s in swiped]
+    ) -> Tuple[List[dict], int]:
+        """Discover potential matches using MongoDB $geoNear aggregation.
+        DB-side pagination, indexed geo filter, sorted by proximity."""
+        user_id = str(user.id)
 
-        # Get blocked users (both directions)
-        blocked = await Block.find({"$or": [
-            {"blocker_id": str(user.id)},
-            {"blocked_id": str(user.id)}
+        if not user.location_geo:
+            return [], 0
+        if not user.is_profile_complete():
+            return [], 0
+
+        # Collect excluded ids: already-swiped + blocked (both directions) + self
+        swiped_docs = await Swipe.find(Swipe.swiper_id == user_id).to_list()
+        excluded = {s.swiped_id for s in swiped_docs}
+
+        blocks = await Block.find({"$or": [
+            {"blocker_id": user_id}, {"blocked_id": user_id}
         ]}).to_list()
-        blocked_ids = set()
-        for b in blocked:
-            blocked_ids.add(b.blocker_id)
-            blocked_ids.add(b.blocked_id)
-        blocked_ids.discard(str(user.id))
+        for b in blocks:
+            excluded.add(b.blocker_id)
+            excluded.add(b.blocked_id)
+        excluded.discard(user_id)
+        excluded.add(user_id)
 
-        # Exclude already swiped and blocked users
-        exclude_ids = set(swiped_ids) | blocked_ids
-        exclude_ids.add(str(user.id))
+        # Convert string ids to ObjectId for $nin
+        excluded_oids = []
+        for sid in excluded:
+            try:
+                excluded_oids.append(ObjectId(sid))
+            except Exception:
+                pass
 
-        # Get gender values (handle both enum and string)
-        looking_for = user.looking_for.value if hasattr(user.looking_for, 'value') else user.looking_for
-        gender = user.gender.value if hasattr(user.gender, 'value') else user.gender
+        looking_for = user.looking_for.value if hasattr(user.looking_for, "value") else user.looking_for
+        gender = user.gender.value if hasattr(user.gender, "value") else user.gender
+        max_distance_meters = int(user.preferences.max_distance / MILES_PER_METER)
 
-        # Build query based on preferences
-        query = {
-            "gender": looking_for,
-            "looking_for": gender,
-            "age": {"$gte": user.preferences.min_age, "$lte": user.preferences.max_age},
-            "settings.discovery_enabled": True,
-        }
+        pipeline = [
+            {
+                "$geoNear": {
+                    "near": {
+                        "type": "Point",
+                        "coordinates": user.location_geo.coordinates,
+                    },
+                    "distanceField": "distance_meters",
+                    "maxDistance": max_distance_meters,
+                    "spherical": True,
+                    "key": "location_geo",
+                    "query": {
+                        "_id": {"$nin": excluded_oids},
+                        "is_deleted": {"$ne": True},
+                        "gender": looking_for,
+                        "looking_for": gender,
+                        "age": {"$gte": user.preferences.min_age, "$lte": user.preferences.max_age},
+                        "settings.discovery_enabled": True,
+                        "photos.0": {"$exists": True},
+                        "interests.0": {"$exists": True, "$ne": ""},
+                    },
+                }
+            },
+            {"$skip": offset},
+            {"$limit": limit + 1},  # +1 to detect has_more
+        ]
 
-        # Get all potential matches
-        potential_users = await User.find(query).to_list()
+        db = get_database()
+        cursor = db["users"].aggregate(pipeline)
+        raw_results = await cursor.to_list(length=limit + 1)
 
-        # Filter out excluded users and calculate distance
+        # has_more is derived; total count for large sets is intentionally cheap (-1 sentinel)
+        has_more = len(raw_results) > limit
+        raw_results = raw_results[:limit]
+
         results = []
-        for potential in potential_users:
-            if str(potential.id) in exclude_ids:
-                continue
-
-            # Calculate distance if both have locations
-            distance = None
-            if (
-                user.location
-                and user.location.coordinates
-                and potential.location
-                and potential.location.coordinates
-            ):
-                distance = haversine(
-                    user.location.coordinates.longitude,
-                    user.location.coordinates.latitude,
-                    potential.location.coordinates.longitude,
-                    potential.location.coordinates.latitude,
-                )
-
-                # Filter by max distance preference
-                if distance > user.preferences.max_distance:
-                    continue
-
-            # Calculate common interests
-            common = list(set(user.interests) & set(potential.interests))
-
+        user_interests = set(user.interests)
+        for doc in raw_results:
+            # Reconstruct User
+            doc["_id"] = doc["_id"]  # already ObjectId
+            potential = User(**doc)
+            distance_meters = doc.get("distance_meters")
+            distance_miles = distance_meters * MILES_PER_METER if distance_meters is not None else None
+            common = list(user_interests & set(potential.interests))
             results.append({
                 "user": potential,
-                "distance": distance,
+                "distance": distance_miles,
                 "common_interests": common,
             })
 
-        total = len(results)
-        paginated = results[offset : offset + limit]
-
-        return paginated, total
+        # Approximate total = current page; client should rely on has_more for paging
+        total = offset + len(results) + (1 if has_more else 0)
+        return results, total
 
 
 class SwipeService:
     @staticmethod
-    async def like(swiper: User, swiped_id: str) -> Tuple[bool, Optional[Match]]:
-        """Like a user (swipe right)."""
-        # Check if already swiped
-        existing = await Swipe.find_one({
-            "swiper_id": str(swiper.id),
-            "swiped_id": swiped_id
+    async def _try_create_match(swiper_id: str, swiped_id: str) -> Optional[Match]:
+        """Atomically create a Match + Conversation if mutual. Returns the Match,
+        or None if no mutual interest yet. Idempotent on concurrent calls."""
+        mutual = await Swipe.find_one({
+            "swiper_id": swiped_id,
+            "swiped_id": swiper_id,
+            "swipe_type": {"$in": [SwipeType.LIKE.value, SwipeType.SUPER_LIKE.value]},
         })
-        if existing:
-            raise ValidationError("Already swiped on this user")
+        if not mutual:
+            return None
 
-        # Check if user exists
+        low, high = Match.canonical_pair(swiper_id, swiped_id)
+
+        # Already matched?
+        existing = await Match.find_one({"user_low": low, "user_high": high})
+        if existing:
+            if not existing.is_active:
+                existing.is_active = True
+                await existing.save()
+            return existing
+
+        match = Match(
+            user1_id=swiper_id,
+            user2_id=swiped_id,
+            user_low=low,
+            user_high=high,
+        )
+        try:
+            await match.insert()
+        except DuplicateKeyError:
+            # Concurrent like won the race — return the winner.
+            return await Match.find_one({"user_low": low, "user_high": high})
+
+        # Conversation (match_id is unique-indexed; rare race protected by upsert)
+        existing_conv = await Conversation.find_one({"match_id": str(match.id)})
+        if not existing_conv:
+            conv = Conversation(
+                match_id=str(match.id),
+                user1_id=swiper_id,
+                user2_id=swiped_id,
+            )
+            try:
+                await conv.insert()
+            except DuplicateKeyError:
+                pass
+
+        return match
+
+    @staticmethod
+    async def _ensure_can_swipe(swiper: User, swiped_id: str):
+        if swiper.is_deleted:
+            raise ForbiddenError("Account is deleted")
+        if swiper.id and str(swiper.id) == swiped_id:
+            raise ValidationError("Cannot swipe on yourself")
+
         swiped_user = await User.get(swiped_id)
-        if not swiped_user:
+        if not swiped_user or swiped_user.is_deleted:
             raise NotFoundError("User not found")
 
-        # Create swipe
+        # Block check (either direction)
+        blocked = await Block.find_one({"$or": [
+            {"blocker_id": str(swiper.id), "blocked_id": swiped_id},
+            {"blocker_id": swiped_id, "blocked_id": str(swiper.id)},
+        ]})
+        if blocked:
+            raise NotFoundError("User not found")
+
+    @staticmethod
+    async def like(swiper: User, swiped_id: str) -> Tuple[bool, Optional[Match]]:
+        await SwipeService._ensure_can_swipe(swiper, swiped_id)
         swipe = Swipe(
             swiper_id=str(swiper.id),
             swiped_id=swiped_id,
             swipe_type=SwipeType.LIKE,
         )
-        await swipe.insert()
+        try:
+            await swipe.insert()
+        except DuplicateKeyError:
+            raise ValidationError("Already swiped on this user")
 
-        # Check for mutual like (match)
-        mutual = await Swipe.find_one({
-            "swiper_id": swiped_id,
-            "swiped_id": str(swiper.id),
-            "swipe_type": {"$in": ["like", "super_like"]}
-        })
-
-        if mutual:
-            # Create match
-            match = Match(
-                user1_id=str(swiper.id),
-                user2_id=swiped_id,
-            )
-            await match.insert()
-
-            # Create conversation
-            conversation = Conversation(
-                match_id=str(match.id),
-                user1_id=str(swiper.id),
-                user2_id=swiped_id,
-            )
-            await conversation.insert()
-
-            return True, match
-
-        return False, None
+        match = await SwipeService._try_create_match(str(swiper.id), swiped_id)
+        return (match is not None), match
 
     @staticmethod
     async def pass_user(swiper: User, swiped_id: str):
-        """Pass on a user (swipe left)."""
-        existing = await Swipe.find_one({
-            "swiper_id": str(swiper.id),
-            "swiped_id": swiped_id
-        })
-        if existing:
-            raise ValidationError("Already swiped on this user")
-
+        await SwipeService._ensure_can_swipe(swiper, swiped_id)
         swipe = Swipe(
             swiper_id=str(swiper.id),
             swiped_id=swiped_id,
             swipe_type=SwipeType.PASS,
         )
-        await swipe.insert()
+        try:
+            await swipe.insert()
+        except DuplicateKeyError:
+            raise ValidationError("Already swiped on this user")
+
+    @staticmethod
+    def _today_key() -> str:
+        return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     @staticmethod
     async def super_like(swiper: User, swiped_id: str) -> Tuple[bool, Optional[Match], int]:
-        """Super like a user."""
-        # Check and reset super likes if needed (daily reset)
-        now = datetime.now(timezone.utc)
-        if swiper.super_likes_reset_at is None or swiper.super_likes_reset_at < now:
-            # Reset super likes for the new day
-            swiper.super_likes_remaining = 3
-            # Set reset time to midnight UTC tomorrow
-            tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
-            swiper.super_likes_reset_at = tomorrow
+        await SwipeService._ensure_can_swipe(swiper, swiped_id)
+
+        today = SwipeService._today_key()
+        # Free users: 1/day. Premium: 5/day.
+        daily_cap = 5 if SubscriptionService.is_premium(swiper) else 1
+
+        if swiper.super_likes_day != today:
+            swiper.super_likes_day = today
+            swiper.super_likes_remaining = daily_cap
             await swiper.save()
 
-        # Check if user has super likes remaining
         if swiper.super_likes_remaining <= 0:
             raise ValidationError("No super likes remaining today")
-
-        existing = await Swipe.find_one({
-            "swiper_id": str(swiper.id),
-            "swiped_id": swiped_id
-        })
-        if existing:
-            raise ValidationError("Already swiped on this user")
-
-        swiped_user = await User.get(swiped_id)
-        if not swiped_user:
-            raise NotFoundError("User not found")
-
-        # Decrement super likes
-        swiper.super_likes_remaining -= 1
-        await swiper.save()
 
         swipe = Swipe(
             swiper_id=str(swiper.id),
             swiped_id=swiped_id,
             swipe_type=SwipeType.SUPER_LIKE,
         )
-        await swipe.insert()
+        try:
+            await swipe.insert()
+        except DuplicateKeyError:
+            raise ValidationError("Already swiped on this user")
 
-        # Check for match
-        mutual = await Swipe.find_one({
-            "swiper_id": swiped_id,
-            "swiped_id": str(swiper.id),
-            "swipe_type": {"$in": ["like", "super_like"]}
-        })
+        swiper.super_likes_remaining -= 1
+        await swiper.save()
 
-        if mutual:
-            match = Match(
-                user1_id=str(swiper.id),
-                user2_id=swiped_id,
-            )
-            await match.insert()
-
-            conversation = Conversation(
-                match_id=str(match.id),
-                user1_id=str(swiper.id),
-                user2_id=swiped_id,
-            )
-            await conversation.insert()
-
-            return True, match, swiper.super_likes_remaining
-
-        return False, None, swiper.super_likes_remaining
+        match = await SwipeService._try_create_match(str(swiper.id), swiped_id)
+        return (match is not None), match, swiper.super_likes_remaining
 
     @staticmethod
     async def undo_last_swipe(user: User) -> Optional[Swipe]:
-        """Undo the last swipe. Requires premium subscription."""
-        # Check if user has active premium subscription
-        now = datetime.now(timezone.utc)
-        if not user.is_premium:
-            raise ForbiddenError("Undo feature requires premium subscription")
+        """Undo the last swipe. Premium-only."""
+        if not SubscriptionService.is_premium(user):
+            raise ForbiddenError("Undo requires premium subscription")
 
-        if user.premium_expires_at and user.premium_expires_at < now:
-            # Premium has expired, update status
-            user.is_premium = False
-            await user.save()
-            raise ForbiddenError("Premium subscription has expired")
-
-        # Get last swipe
         last_swipe = await Swipe.find(
             Swipe.swiper_id == str(user.id)
         ).sort(-Swipe.created_at).first_or_none()
@@ -441,25 +478,27 @@ class SwipeService:
         if not last_swipe:
             raise NotFoundError("No swipe to undo")
 
-        # If the swipe resulted in a match, we need to undo that too
+        # If the swipe produced a match, undo that too
         if last_swipe.swipe_type in [SwipeType.LIKE, SwipeType.SUPER_LIKE]:
-            match = await Match.find_one({"$or": [
-                {"user1_id": str(user.id), "user2_id": last_swipe.swiped_id},
-                {"user1_id": last_swipe.swiped_id, "user2_id": str(user.id)}
-            ]})
+            low, high = Match.canonical_pair(str(user.id), last_swipe.swiped_id)
+            match = await Match.find_one({"user_low": low, "user_high": high})
             if match and match.is_active:
                 match.is_active = False
                 await match.save()
-                # Also remove conversation
-                conversation = await Conversation.find_one(
-                    Conversation.match_id == str(match.id)
-                )
-                if conversation:
-                    await conversation.delete()
+                conv = await Conversation.find_one({"match_id": str(match.id)})
+                if conv:
+                    conv.is_active = False
+                    conv.closed_reason = "unmatched"
+                    await conv.save()
 
-        # Delete the swipe
+            # Refund super-like if applicable
+            if last_swipe.swipe_type == SwipeType.SUPER_LIKE:
+                today = SwipeService._today_key()
+                if user.super_likes_day == today:
+                    user.super_likes_remaining += 1
+                    await user.save()
+
         await last_swipe.delete()
-
         return last_swipe
 
 
@@ -471,57 +510,69 @@ class MatchService:
         offset: int = 0,
         new_only: bool = False,
     ) -> Tuple[List[dict], int]:
-        """Get user's matches."""
-        query = {
-            "$or": [
-                {"user1_id": str(user.id)},
-                {"user2_id": str(user.id)},
-            ],
+        """DB-paginated matches with batched user + conversation fetch (no N+1)."""
+        user_id = str(user.id)
+
+        query: dict = {
+            "$or": [{"user1_id": user_id}, {"user2_id": user_id}],
             "is_active": True,
         }
+        if new_only:
+            query["$or"] = [
+                {"user1_id": user_id, "user1_seen": False},
+                {"user2_id": user_id, "user2_seen": False},
+            ]
 
-        matches = await Match.find(query).sort(-Match.matched_at).to_list()
+        total = await Match.find(query).count()
+        matches = await Match.find(query).sort(-Match.matched_at).skip(offset).limit(limit).to_list()
+
+        if not matches:
+            return [], total
+
+        # Batch fetch other users
+        other_ids = []
+        for m in matches:
+            other_ids.append(m.get_other_user_id(user_id))
+        other_oids = []
+        for oid in other_ids:
+            try:
+                other_oids.append(ObjectId(oid))
+            except Exception:
+                pass
+
+        other_users = await User.find({"_id": {"$in": other_oids}}).to_list()
+        user_map = {str(u.id): u for u in other_users}
+
+        # Batch fetch conversations
+        match_ids = [str(m.id) for m in matches]
+        convs = await Conversation.find({"match_id": {"$in": match_ids}}).to_list()
+        conv_map = {c.match_id: c for c in convs}
 
         results = []
-        for match in matches:
-            other_user_id = match.get_other_user_id(str(user.id))
-            other_user = await User.get(other_user_id)
-            if not other_user:
+        for m in matches:
+            other = user_map.get(m.get_other_user_id(user_id))
+            if not other or other.is_deleted:
                 continue
-
-            is_new = match.is_new_for_user(str(user.id))
-
-            if new_only and not is_new:
-                continue
-
-            # Get last message from conversation
-            conversation = await Conversation.find_one(
-                Conversation.match_id == str(match.id)
-            )
+            conv = conv_map.get(str(m.id))
             last_message = None
-            if conversation and conversation.last_message_content:
+            if conv and conv.last_message_content:
                 last_message = {
-                    "id": conversation.last_message_id,
-                    "content": conversation.last_message_content,
-                    "sender_id": conversation.last_message_sender_id,
-                    "timestamp": conversation.last_message_at.isoformat() if conversation.last_message_at else None,
+                    "id": conv.last_message_id,
+                    "content": conv.last_message_content,
+                    "sender_id": conv.last_message_sender_id,
+                    "timestamp": conv.last_message_at.isoformat() if conv.last_message_at else None,
                 }
-
             results.append({
-                "match": match,
-                "other_user": other_user,
-                "is_new": is_new,
+                "match": m,
+                "other_user": other,
+                "is_new": m.is_new_for_user(user_id),
                 "last_message": last_message,
             })
 
-        total = len(results)
-        paginated = results[offset : offset + limit]
-
-        return paginated, total
+        return results, total
 
     @staticmethod
     async def unmatch(user: User, match_id: str):
-        """Unmatch with a user."""
         match = await Match.get(match_id)
         if not match:
             raise NotFoundError("Match not found")
@@ -532,18 +583,16 @@ class MatchService:
         match.is_active = False
         await match.save()
 
-        # Mark conversation as inactive too
-        conversation = await Conversation.find_one(
-            Conversation.match_id == match_id
-        )
-        if conversation:
-            await conversation.delete()
+        conv = await Conversation.find_one({"match_id": match_id})
+        if conv:
+            conv.is_active = False
+            conv.closed_reason = "unmatched"
+            await conv.save()
 
 
 class BlockService:
     @staticmethod
     async def block_user(blocker: User, blocked_id: str):
-        """Block a user."""
         if str(blocker.id) == blocked_id:
             raise ValidationError("Cannot block yourself")
 
@@ -553,66 +602,85 @@ class BlockService:
 
         existing = await Block.find_one({
             "blocker_id": str(blocker.id),
-            "blocked_id": blocked_id
+            "blocked_id": blocked_id,
         })
         if existing:
             raise ValidationError("User already blocked")
 
-        block = Block(
-            blocker_id=str(blocker.id),
-            blocked_id=blocked_id,
-        )
+        block = Block(blocker_id=str(blocker.id), blocked_id=blocked_id)
         await block.insert()
 
-        # Remove any existing match
-        match = await Match.find_one({"$or": [
-            {"user1_id": str(blocker.id), "user2_id": blocked_id, "is_active": True},
-            {"user1_id": blocked_id, "user2_id": str(blocker.id), "is_active": True}
-        ]})
+        # Deactivate any matches and conversations in BOTH directions
+        low, high = Match.canonical_pair(str(blocker.id), blocked_id)
+        match = await Match.find_one({"user_low": low, "user_high": high, "is_active": True})
         if match:
             match.is_active = False
             await match.save()
+            conv = await Conversation.find_one({"match_id": str(match.id)})
+            if conv:
+                conv.is_active = False
+                conv.closed_reason = "blocked"
+                await conv.save()
 
     @staticmethod
     async def unblock_user(blocker: User, blocked_id: str):
-        """Unblock a user."""
         block = await Block.find_one({
             "blocker_id": str(blocker.id),
-            "blocked_id": blocked_id
+            "blocked_id": blocked_id,
         })
         if not block:
             raise NotFoundError("User not blocked")
-
         await block.delete()
 
     @staticmethod
     async def get_blocked_users(user: User) -> List[dict]:
-        """Get list of blocked users."""
         blocks = await Block.find(Block.blocker_id == str(user.id)).to_list()
+        if not blocks:
+            return []
+
+        blocked_oids = []
+        for b in blocks:
+            try:
+                blocked_oids.append(ObjectId(b.blocked_id))
+            except Exception:
+                pass
+
+        users = await User.find({"_id": {"$in": blocked_oids}}).to_list()
+        user_map = {str(u.id): u for u in users}
 
         results = []
-        for block in blocks:
-            blocked_user = await User.get(block.blocked_id)
-            if blocked_user:
-                results.append({
-                    "id": block.blocked_id,
-                    "name": blocked_user.name,
-                    "blocked_at": block.created_at.isoformat(),
-                })
-
+        for b in blocks:
+            u = user_map.get(b.blocked_id)
+            if not u:
+                continue
+            results.append({
+                "id": b.blocked_id,
+                "name": u.name,
+                "blocked_at": b.created_at.isoformat(),
+            })
         return results
 
 
 class ReportService:
     @staticmethod
     async def report_user(reporter: User, reported_id: str, reason: str, details: Optional[str] = None):
-        """Report a user."""
         if str(reporter.id) == reported_id:
             raise ValidationError("Cannot report yourself")
 
         reported_user = await User.get(reported_id)
         if not reported_user:
             raise NotFoundError("User not found")
+
+        # Rate limit: 1 report per (reporter, reported) per day
+        from datetime import timedelta
+        since = datetime.now(timezone.utc) - timedelta(days=1)
+        existing = await Report.find_one({
+            "reporter_id": str(reporter.id),
+            "reported_id": reported_id,
+            "created_at": {"$gte": since},
+        })
+        if existing:
+            raise ValidationError("You have already reported this user recently")
 
         report = Report(
             reporter_id=str(reporter.id),
@@ -621,3 +689,29 @@ class ReportService:
             details=details,
         )
         await report.insert()
+
+
+class SubscriptionService:
+    """Premium entitlement is derived from active Subscription rows + cached
+    fields on User for fast checks. Webhooks update both."""
+
+    @staticmethod
+    def is_premium(user: User) -> bool:
+        if not user.is_premium:
+            return False
+        if not user.premium_expires_at:
+            return False
+        # Handle naive datetime from older docs
+        exp = user.premium_expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return exp > datetime.now(timezone.utc)
+
+    @staticmethod
+    async def apply_subscription(user: User, sub: Subscription) -> User:
+        """Sync cached premium flags from a Subscription record."""
+        active = sub.is_active()
+        user.is_premium = active
+        user.premium_expires_at = sub.current_period_end if active else None
+        await user.save()
+        return user

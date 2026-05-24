@@ -122,7 +122,7 @@ class MuteConversationRequest(BaseModel):
 
 
 class MarkReadRequest(BaseModel):
-    message_ids: List[str]
+    message_ids: Optional[List[str]] = None  # None or empty = mark all unread
 
 
 # =============================================================================

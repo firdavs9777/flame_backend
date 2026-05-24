@@ -1,6 +1,9 @@
 import httpx
+import logging
 from typing import Optional, Tuple
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class LocationService:
@@ -32,7 +35,7 @@ class LocationService:
                         "zoom": 10,  # City level
                     },
                     headers=self.headers,
-                    timeout=10.0,
+                    timeout=3.0,
                 )
 
                 if response.status_code != 200:
@@ -59,7 +62,7 @@ class LocationService:
                 return city, state, country
 
         except Exception as e:
-            print(f"Geocoding error: {e}")
+            logger.warning(f"Reverse geocode failed: {e}")
             return None, None, None
 
     async def get_location_string(self, latitude: float, longitude: float) -> Optional[str]:

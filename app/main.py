@@ -11,6 +11,25 @@ from app.core.exceptions import AppException
 from app.core.redis import redis_pubsub
 from app.core.cache import cache
 
+# Boot-time guardrails: prevent shipping insecure config
+if not settings.DEBUG:
+    if "*" in settings.CORS_ORIGINS or not settings.CORS_ORIGINS:
+        raise RuntimeError(
+            "CORS_ORIGINS must be an explicit allow-list in production "
+            "(no wildcards, no empty list)."
+        )
+    known_weak = {
+        "your-super-secret-key-here",
+        "flame-app-super-secret-key-change-in-production-2024",
+        "changeme",
+        "secret",
+    }
+    if (
+        settings.JWT_SECRET_KEY.strip().lower() in known_weak
+        or len(settings.JWT_SECRET_KEY) < 32
+    ):
+        raise RuntimeError("JWT_SECRET_KEY is weak. Use at least 32 random bytes.")
+
 # Configure logging
 logging.basicConfig(level=logging.DEBUG if settings.DEBUG else logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,6 +48,7 @@ from app.community.routes import router as community_router
 from app.chat.routes import router as chat_router, sticker_router
 from app.chat.websocket import router as ws_router
 from app.users.routes import router as users_router
+from app.billing.routes import router as billing_router
 
 
 @asynccontextmanager
@@ -79,8 +99,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "X-Requested-With"],
+    max_age=600,
 )
 
 
@@ -103,24 +124,22 @@ async def app_exception_handler(request: Request, exc: AppException):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handle general exceptions."""
-    # Log the actual error for debugging
+    """Handle general exceptions. Never leak internals in production."""
     logger.error(f"Unhandled exception on {request.method} {request.url.path}: {exc}")
     logger.error(traceback.format_exc())
 
-    # In debug mode, show the actual error message
-    error_message = str(exc) if settings.DEBUG else "Internal server error"
+    if settings.DEBUG:
+        body = {
+            "code": "SERVER_ERROR",
+            "message": str(exc),
+            "details": traceback.format_exc(),
+        }
+    else:
+        body = {"code": "SERVER_ERROR", "message": "Internal server error", "details": None}
 
     return JSONResponse(
         status_code=500,
-        content={
-            "success": False,
-            "error": {
-                "code": "SERVER_ERROR",
-                "message": error_message,
-                "details": traceback.format_exc() if settings.DEBUG else None,
-            },
-        },
+        content={"success": False, "error": body},
     )
 
 
@@ -170,6 +189,7 @@ app.include_router(users_router, prefix=settings.API_V1_PREFIX)
 app.include_router(community_router, prefix=settings.API_V1_PREFIX)
 app.include_router(chat_router, prefix=settings.API_V1_PREFIX)
 app.include_router(sticker_router, prefix=settings.API_V1_PREFIX)
+app.include_router(billing_router, prefix=settings.API_V1_PREFIX)
 app.include_router(ws_router)
 
 

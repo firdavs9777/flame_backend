@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, Query, UploadFile, File, Form, status
 from typing import Optional
 from app.core.dependencies import get_current_user
+from app.core.rate_limit import user_rate_limit
+from app.core.exceptions import ValidationError
 from app.models.user import User
 from app.models.message import MessageType, MediaInfo
 from app.chat.schemas import (
@@ -15,6 +17,21 @@ from app.chat.schemas import (
 from app.chat.service import ChatService, StickerService
 
 router = APIRouter(prefix="/conversations", tags=["Chat"])
+
+# 60 messages/min/user is generous; 5MB/min for media via the content-type routes
+_SEND_LIMIT = Depends(user_rate_limit("send_msg", max_requests=60, window_seconds=60))
+_MEDIA_LIMIT = Depends(user_rate_limit("send_media", max_requests=20, window_seconds=60))
+_REACT_LIMIT = Depends(user_rate_limit("react", max_requests=120, window_seconds=60))
+
+MAX_VIDEO_BYTES = 50 * 1024 * 1024   # 50 MB
+MAX_AUDIO_BYTES = 25 * 1024 * 1024   # 25 MB
+MAX_IMAGE_BYTES = 10 * 1024 * 1024   # 10 MB
+
+
+def _enforce_upload_size(file: UploadFile, max_bytes: int, kind: str) -> None:
+    size = getattr(file, "size", None)
+    if size is not None and size > max_bytes:
+        raise ValidationError(f"{kind} too large (max {max_bytes // (1024*1024)} MB)")
 
 
 # =============================================================================
@@ -168,7 +185,7 @@ async def get_messages(
     }
 
 
-@router.post("/{conversation_id}/messages", status_code=status.HTTP_201_CREATED)
+@router.post("/{conversation_id}/messages", status_code=status.HTTP_201_CREATED, dependencies=[_SEND_LIMIT])
 async def send_message(
     conversation_id: str,
     data: SendMessageRequest,
@@ -195,7 +212,7 @@ async def send_message(
     }
 
 
-@router.post("/{conversation_id}/messages/image", status_code=status.HTTP_201_CREATED)
+@router.post("/{conversation_id}/messages/image", status_code=status.HTTP_201_CREATED, dependencies=[_MEDIA_LIMIT])
 async def send_image_message(
     conversation_id: str,
     image: UploadFile = File(...),
@@ -204,7 +221,7 @@ async def send_image_message(
 ):
     """Send an image message."""
     from app.core.storage import storage
-
+    _enforce_upload_size(image, MAX_IMAGE_BYTES, "Image")
     image_url = await storage.upload_message_image(conversation_id, image)
 
     message = await ChatService.send_message(
@@ -227,7 +244,7 @@ async def send_image_message(
     }
 
 
-@router.post("/{conversation_id}/messages/video", status_code=status.HTTP_201_CREATED)
+@router.post("/{conversation_id}/messages/video", status_code=status.HTTP_201_CREATED, dependencies=[_MEDIA_LIMIT])
 async def send_video_message(
     conversation_id: str,
     video: UploadFile = File(...),
@@ -240,7 +257,7 @@ async def send_video_message(
 ):
     """Send a video message."""
     from app.core.storage import storage
-
+    _enforce_upload_size(video, MAX_VIDEO_BYTES, "Video")
     video_url = await storage.upload_message_video(conversation_id, video)
 
     thumbnail_url = None
@@ -277,7 +294,7 @@ async def send_video_message(
     }
 
 
-@router.post("/{conversation_id}/messages/audio", status_code=status.HTTP_201_CREATED)
+@router.post("/{conversation_id}/messages/audio", status_code=status.HTTP_201_CREATED, dependencies=[_MEDIA_LIMIT])
 async def send_audio_message(
     conversation_id: str,
     audio: UploadFile = File(...),
@@ -287,7 +304,7 @@ async def send_audio_message(
 ):
     """Send an audio message."""
     from app.core.storage import storage
-
+    _enforce_upload_size(audio, MAX_AUDIO_BYTES, "Audio")
     audio_url = await storage.upload_message_audio(conversation_id, audio)
 
     media_info = MediaInfo(
@@ -317,7 +334,7 @@ async def send_audio_message(
     }
 
 
-@router.post("/{conversation_id}/messages/voice", status_code=status.HTTP_201_CREATED)
+@router.post("/{conversation_id}/messages/voice", status_code=status.HTTP_201_CREATED, dependencies=[_MEDIA_LIMIT])
 async def send_voice_message(
     conversation_id: str,
     voice: UploadFile = File(...),
@@ -327,7 +344,7 @@ async def send_voice_message(
 ):
     """Send a voice message."""
     from app.core.storage import storage
-
+    _enforce_upload_size(voice, MAX_AUDIO_BYTES, "Voice message")
     voice_url = await storage.upload_voice_message(conversation_id, voice)
 
     media_info = MediaInfo(
@@ -357,7 +374,7 @@ async def send_voice_message(
     }
 
 
-@router.post("/{conversation_id}/messages/sticker", status_code=status.HTTP_201_CREATED)
+@router.post("/{conversation_id}/messages/sticker", status_code=status.HTTP_201_CREATED, dependencies=[_SEND_LIMIT])
 async def send_sticker_message(
     conversation_id: str,
     data: SendStickerRequest,
@@ -434,7 +451,7 @@ async def delete_message(
 # Reaction Endpoints
 # =============================================================================
 
-@router.post("/{conversation_id}/messages/{message_id}/reactions")
+@router.post("/{conversation_id}/messages/{message_id}/reactions", dependencies=[_REACT_LIMIT])
 async def add_reaction(
     conversation_id: str,
     message_id: str,

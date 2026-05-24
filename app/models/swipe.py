@@ -3,6 +3,7 @@ from pydantic import Field
 from typing import Annotated
 from datetime import datetime, timezone
 from enum import Enum
+import pymongo
 
 
 class SwipeType(str, Enum):
@@ -20,5 +21,10 @@ class Swipe(Document):
     class Settings:
         name = "swipes"
         indexes = [
-            [("swiper_id", 1), ("swiped_id", 1)],  # Compound index for quick lookup
+            pymongo.IndexModel(
+                [("swiper_id", pymongo.ASCENDING), ("swiped_id", pymongo.ASCENDING)],
+                unique=True,
+                name="uniq_swiper_swiped",
+            ),
+            [("swiper_id", pymongo.ASCENDING), ("created_at", pymongo.DESCENDING)],
         ]

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 import uuid
-from app.models.user import User, Photo, UserPreferences, Location, Coordinates
+from app.models.user import User, Photo, UserPreferences, Location, Coordinates, GeoPoint
 from app.models.refresh_token import RefreshToken
 from app.models.device import Device, Platform
 from app.core.security import (
@@ -22,6 +22,8 @@ from app.core.exceptions import (
     TokenExpiredError,
 )
 from app.auth.schemas import RegisterRequest, TokenResponse
+from app.core.token_blocklist import revoke_all_for_user
+import secrets
 
 
 class AuthService:
@@ -60,11 +62,14 @@ class AuthService:
             for i, url in enumerate(photo_urls)
         ]
 
-        # Reverse geocode location
+        # Reverse geocode (best-effort, short timeout — never blocks registration)
         from app.core.location import location_service
-        city, state, country = await location_service.reverse_geocode(
-            data.latitude, data.longitude
-        )
+        try:
+            city, state, country = await location_service.reverse_geocode(
+                data.latitude, data.longitude
+            )
+        except Exception:
+            city, state, country = None, None, None
 
         location = Location(
             city=city,
@@ -72,9 +77,10 @@ class AuthService:
             country=country,
             coordinates=Coordinates(
                 latitude=data.latitude,
-                longitude=data.longitude
+                longitude=data.longitude,
             ),
         )
+        location_geo = GeoPoint(coordinates=[data.longitude, data.latitude])
 
         # Create user
         verification_code = generate_verification_code()
@@ -89,6 +95,7 @@ class AuthService:
             interests=data.interests,
             photos=photos,
             location=location,
+            location_geo=location_geo,
             is_online=True,
             verification_code=verification_code,
             verification_code_expires=datetime.now(timezone.utc) + timedelta(minutes=15),
@@ -163,7 +170,7 @@ class AuthService:
 
     @staticmethod
     async def logout(user_id: str):
-        """Logout user and invalidate all refresh tokens."""
+        """Logout user: invalidate ALL refresh tokens AND existing access tokens."""
         user = await User.get(user_id)
         if user:
             user.is_online = False
@@ -172,6 +179,7 @@ class AuthService:
         await RefreshToken.find(RefreshToken.user_id == user_id).update(
             {"$set": {"is_revoked": True}}
         )
+        await revoke_all_for_user(user_id)
 
     @staticmethod
     async def forgot_password(email: str):
@@ -218,16 +226,19 @@ class AuthService:
         user.password_reset_token_expires = None
         await user.save()
 
-        # Revoke all refresh tokens for security
+        # Revoke all refresh AND access tokens for security
         await RefreshToken.find(RefreshToken.user_id == str(user.id)).update(
             {"$set": {"is_revoked": True}}
         )
+        await revoke_all_for_user(str(user.id))
 
     @staticmethod
     async def verify_email(email: str, code: str):
-        """Verify user email with 6-digit code."""
+        """Verify user email with 6-digit code. Constant-time compare."""
         user = await User.find_one(User.email == email)
-        if not user or not user.verification_code or user.verification_code != code:
+        if not user or not user.verification_code:
+            raise ValidationError("Invalid email or verification code")
+        if not secrets.compare_digest(user.verification_code, code):
             raise ValidationError("Invalid email or verification code")
 
         # Check expiration - handle both naive and timezone-aware datetimes
@@ -291,10 +302,11 @@ class AuthService:
         user.password_hash = get_password_hash(new_password)
         await user.save()
 
-        # Revoke all other refresh tokens for security
+        # Revoke all refresh AND access tokens for security
         await RefreshToken.find(RefreshToken.user_id == str(user.id)).update(
             {"$set": {"is_revoked": True}}
         )
+        await revoke_all_for_user(str(user.id))
 
     @staticmethod
     async def _create_tokens(user_id: str) -> TokenResponse:

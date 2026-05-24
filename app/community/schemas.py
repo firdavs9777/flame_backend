@@ -1,7 +1,13 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 from app.models.user import Gender
 from app.models.report import ReportReason
+
+
+class StrictModel(BaseModel):
+    """Reject unknown fields so attackers can't mass-assign protected attributes
+    like is_premium or is_verified through update endpoints."""
+    model_config = ConfigDict(extra="forbid")
 
 
 # User Profile Schemas
@@ -74,19 +80,19 @@ class PublicUserResponse(BaseModel):
     common_interests: Optional[List[str]] = None
 
 
-class UpdateProfileRequest(BaseModel):
+class UpdateProfileRequest(StrictModel):
     name: Optional[str] = Field(default=None, min_length=2, max_length=50)
     bio: Optional[str] = Field(default=None, max_length=500)
     interests: Optional[List[str]] = Field(default=None, min_length=1, max_length=10)
     looking_for: Optional[Gender] = None
 
 
-class UpdateLocationRequest(BaseModel):
+class UpdateLocationRequest(StrictModel):
     latitude: float = Field(ge=-90, le=90)
     longitude: float = Field(ge=-180, le=180)
 
 
-class UpdatePreferencesRequest(BaseModel):
+class UpdatePreferencesRequest(StrictModel):
     min_age: Optional[int] = Field(default=None, ge=18, le=100)
     max_age: Optional[int] = Field(default=None, ge=18, le=100)
     max_distance: Optional[int] = Field(default=None, ge=1, le=500)
@@ -94,20 +100,20 @@ class UpdatePreferencesRequest(BaseModel):
     show_online_status: Optional[bool] = None
 
 
-class UpdateNotificationsRequest(BaseModel):
+class UpdateNotificationsRequest(StrictModel):
     new_matches: Optional[bool] = None
     new_messages: Optional[bool] = None
     super_likes: Optional[bool] = None
     promotions: Optional[bool] = None
 
 
-class ReorderPhotosRequest(BaseModel):
+class ReorderPhotosRequest(StrictModel):
     photo_ids: List[str]
 
 
-class DeleteAccountRequest(BaseModel):
+class DeleteAccountRequest(StrictModel):
     password: str
-    reason: Optional[str] = None
+    reason: Optional[str] = Field(default=None, max_length=500)
 
 
 # Discovery Schemas

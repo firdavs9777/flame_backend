@@ -8,6 +8,10 @@ import secrets
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
+def _jti() -> str:
+    return secrets.token_urlsafe(16)
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Verify a password against its hash."""
     return pwd_context.verify(plain_password, hashed_password)
@@ -19,7 +23,7 @@ def get_password_hash(password: str) -> str:
 
 
 def create_access_token(subject: str, expires_delta: Optional[timedelta] = None) -> str:
-    """Create a JWT access token."""
+    """Create a JWT access token with a JTI so it can be revoked."""
     if expires_delta:
         expire = datetime.now(timezone.utc) + expires_delta
     else:
@@ -32,6 +36,7 @@ def create_access_token(subject: str, expires_delta: Optional[timedelta] = None)
         "exp": expire,
         "type": "access",
         "iat": datetime.now(timezone.utc),
+        "jti": _jti(),
     }
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 

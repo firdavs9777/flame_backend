@@ -1,7 +1,12 @@
-from fastapi import APIRouter, Depends, UploadFile, File, Query, status
+from fastapi import APIRouter, Depends, UploadFile, File, Query, status, BackgroundTasks
 from typing import Optional, List
 from app.core.dependencies import get_current_user
+from app.core.rate_limit import user_rate_limit
 from app.models.user import User
+
+_SWIPE_LIMIT = Depends(user_rate_limit("swipe", max_requests=120, window_seconds=60))   # 120/min
+_REPORT_LIMIT = Depends(user_rate_limit("report", max_requests=10, window_seconds=3600))
+_DISCOVER_LIMIT = Depends(user_rate_limit("discover", max_requests=120, window_seconds=60))
 from app.community.schemas import (
     UpdateProfileRequest,
     UpdateLocationRequest,
@@ -81,11 +86,15 @@ def format_full_user(user: User) -> dict:
 
 
 def format_public_user(user: User, distance: Optional[float] = None, common_interests: Optional[List[str]] = None) -> dict:
-    """Format user for public response."""
+    """Format user for public response. Respects the *target* user's privacy prefs."""
     location_str = None
     if user.location:
         parts = [user.location.city, user.location.state]
-        location_str = ", ".join(filter(None, parts))
+        location_str = ", ".join(filter(None, parts)) or None
+
+    prefs = user.preferences
+    show_distance = prefs.show_distance if prefs else True
+    show_online = prefs.show_online_status if prefs else True
 
     return {
         "id": str(user.id),
@@ -96,9 +105,9 @@ def format_public_user(user: User, distance: Optional[float] = None, common_inte
         "interests": user.interests,
         "photos": [p.url for p in user.photos],
         "location": location_str,
-        "distance": round(distance, 1) if distance else None,
-        "is_online": user.is_online,
-        "last_active": user.last_active.isoformat(),
+        "distance": round(distance, 1) if (distance is not None and show_distance) else None,
+        "is_online": user.is_online if show_online else False,
+        "last_active": user.last_active.isoformat() if show_online else None,
         "common_interests": common_interests,
     }
 
@@ -129,17 +138,35 @@ async def update_profile(
     }
 
 
+async def _geocode_user_location(user_id: str, latitude: float, longitude: float):
+    """Background task: reverse-geocode and persist city/state/country."""
+    from app.core.location import location_service
+    city, state, country = await location_service.reverse_geocode(latitude, longitude)
+    user = await User.get(user_id)
+    if not user or not user.location:
+        return
+    user.location.city = city
+    user.location.state = state
+    user.location.country = country
+    await user.save()
+
+
 @router.patch("/users/me/location")
 async def update_location(
     data: UpdateLocationRequest,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
 ):
-    """Update user location."""
+    """Update user location. Reverse geocoding runs in background."""
     updated = await UserService.update_location(
         current_user,
         data.latitude,
         data.longitude,
     )
+    background_tasks.add_task(
+        _geocode_user_location, str(updated.id), data.latitude, data.longitude
+    )
+
     location = None
     if updated.location:
         location = {
@@ -280,7 +307,7 @@ async def delete_account(
 
 
 # Discovery Endpoints
-@router.get("/discover")
+@router.get("/discover", dependencies=[_DISCOVER_LIMIT])
 async def discover(
     limit: int = Query(default=10, le=50),
     offset: int = Query(default=0, ge=0),
@@ -314,7 +341,48 @@ async def discover(
 
 
 # Swipe Endpoints
-@router.post("/swipes/like")
+async def _notify_match(current_user: User, other_id: str, match) -> dict:
+    """Build match payload and notify the *other* user over WebSocket."""
+    from app.models.conversation import Conversation
+    from app.chat.websocket import notify_new_match
+
+    other = await User.get(other_id)
+    conv = await Conversation.find_one({"match_id": str(match.id)})
+    conversation_id = str(conv.id) if conv else None
+
+    # Payload from the perspective of CURRENT user (returned in API response)
+    payload_for_caller = {
+        "id": str(match.id),
+        "user": {
+            "id": other_id,
+            "name": other.name if other else None,
+            "photos": [p.url for p in other.photos] if other else [],
+        },
+        "matched_at": match.matched_at.isoformat(),
+    }
+
+    # Payload from the perspective of OTHER user (sent over WS)
+    payload_for_other = {
+        "id": str(match.id),
+        "user": {
+            "id": str(current_user.id),
+            "name": current_user.name,
+            "photos": [p.url for p in current_user.photos],
+        },
+        "matched_at": match.matched_at.isoformat(),
+        "conversation_id": conversation_id,
+    }
+
+    await notify_new_match(
+        recipient_id=other_id,
+        match_payload=payload_for_other,
+        conversation_id=conversation_id,
+        swiper_id=str(current_user.id),
+    )
+    return payload_for_caller
+
+
+@router.post("/swipes/like", dependencies=[_SWIPE_LIMIT])
 async def like_user(
     data: SwipeRequest,
     current_user: User = Depends(get_current_user),
@@ -324,47 +392,14 @@ async def like_user(
 
     response = {
         "success": True,
-        "data": {
-            "liked": True,
-            "is_match": is_match,
-        },
+        "data": {"liked": True, "is_match": is_match},
     }
-
     if match:
-        matched_user = await User.get(data.user_id)
-        match_data = {
-            "id": str(match.id),
-            "user": {
-                "id": data.user_id,
-                "name": matched_user.name if matched_user else None,
-                "photos": [p.url for p in matched_user.photos] if matched_user else [],
-            },
-            "matched_at": match.matched_at.isoformat(),
-        }
-        response["data"]["match"] = match_data
-
-        # Get the conversation for this match
-        from app.models.conversation import Conversation
-        conversation = await Conversation.find_one({"match_id": str(match.id)})
-        conversation_id = str(conversation.id) if conversation else None
-
-        # Notify the other user about the match via WebSocket
-        # Redis pub/sub handles cross-worker subscription automatically
-        from app.chat.websocket import notify_new_match
-        await notify_new_match(data.user_id, {
-            "match": match_data,
-            "user": {
-                "id": str(current_user.id),
-                "name": current_user.name,
-                "photos": [p.url for p in current_user.photos],
-            },
-            "conversation_id": conversation_id,
-        }, conversation_id=conversation_id)
-
+        response["data"]["match"] = await _notify_match(current_user, data.user_id, match)
     return response
 
 
-@router.post("/swipes/pass")
+@router.post("/swipes/pass", dependencies=[_SWIPE_LIMIT])
 async def pass_user(
     data: SwipeRequest,
     current_user: User = Depends(get_current_user),
@@ -377,7 +412,7 @@ async def pass_user(
     }
 
 
-@router.post("/swipes/super-like")
+@router.post("/swipes/super-like", dependencies=[_SWIPE_LIMIT])
 async def super_like_user(
     data: SwipeRequest,
     current_user: User = Depends(get_current_user),
@@ -393,38 +428,8 @@ async def super_like_user(
             "remaining_super_likes": remaining,
         },
     }
-
     if match:
-        matched_user = await User.get(data.user_id)
-        match_data = {
-            "id": str(match.id),
-            "user": {
-                "id": data.user_id,
-                "name": matched_user.name if matched_user else None,
-                "photos": [p.url for p in matched_user.photos] if matched_user else [],
-            },
-            "matched_at": match.matched_at.isoformat(),
-        }
-        response["data"]["match"] = match_data
-
-        # Get the conversation for this match
-        from app.models.conversation import Conversation
-        conversation = await Conversation.find_one({"match_id": str(match.id)})
-        conversation_id = str(conversation.id) if conversation else None
-
-        # Notify the other user about the match via WebSocket
-        # Redis pub/sub handles cross-worker subscription automatically
-        from app.chat.websocket import notify_new_match
-        await notify_new_match(data.user_id, {
-            "match": match_data,
-            "user": {
-                "id": str(current_user.id),
-                "name": current_user.name,
-                "photos": [p.url for p in current_user.photos],
-            },
-            "conversation_id": conversation_id,
-        }, conversation_id=conversation_id)
-
+        response["data"]["match"] = await _notify_match(current_user, data.user_id, match)
     return response
 
 
@@ -501,7 +506,7 @@ async def unmatch(
 
 
 # Reporting & Blocking Endpoints
-@router.post("/reports", status_code=status.HTTP_201_CREATED)
+@router.post("/reports", status_code=status.HTTP_201_CREATED, dependencies=[_REPORT_LIMIT])
 async def report_user(
     data: ReportRequest,
     current_user: User = Depends(get_current_user),

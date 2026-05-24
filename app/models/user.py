@@ -1,8 +1,9 @@
 from beanie import Document, Indexed
 from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List, Annotated
+from typing import Optional, List, Annotated, Literal
 from datetime import datetime, timezone
 from enum import Enum
+import pymongo
 
 
 class Gender(str, Enum):
@@ -24,6 +25,12 @@ class Coordinates(BaseModel):
     longitude: float
 
 
+class GeoPoint(BaseModel):
+    """GeoJSON Point — coordinates are [longitude, latitude]."""
+    type: Literal["Point"] = "Point"
+    coordinates: List[float] = Field(default_factory=lambda: [0.0, 0.0])
+
+
 class Location(BaseModel):
     city: Optional[str] = None
     state: Optional[str] = None
@@ -34,7 +41,7 @@ class Location(BaseModel):
 class UserPreferences(BaseModel):
     min_age: int = 18
     max_age: int = 50
-    max_distance: int = 50  # in miles/km
+    max_distance: int = 50  # in miles
     show_distance: bool = True
     show_online_status: bool = True
 
@@ -63,6 +70,8 @@ class User(Document):
     interests: List[str] = Field(default_factory=list, min_length=1, max_length=10)
     photos: List[Photo] = Field(default_factory=list)
     location: Optional[Location] = None
+    # GeoJSON-shaped duplicate for $geoNear / 2dsphere indexed queries
+    location_geo: Optional[GeoPoint] = None
 
     is_online: bool = False
     is_verified: bool = False
@@ -75,18 +84,22 @@ class User(Document):
     settings: UserSettings = Field(default_factory=UserSettings)
 
     # Auth related
-    verification_code: Optional[str] = None  # 6-digit code for email verification
+    verification_code: Optional[str] = None
     verification_code_expires: Optional[datetime] = None
-    password_reset_token: Optional[str] = None  # Token for password reset links
+    password_reset_token: Optional[str] = None
     password_reset_token_expires: Optional[datetime] = None
 
-    # Super like tracking
-    super_likes_remaining: int = 3  # Daily super likes
-    super_likes_reset_at: Optional[datetime] = None
+    # Super like tracking — day key (YYYY-MM-DD UTC) so resets are deterministic
+    super_likes_remaining: int = 3
+    super_likes_day: Optional[str] = None  # e.g. "2026-05-24"
 
-    # Premium status
+    # Premium status — driven by subscription receipts, not direct writes
     is_premium: bool = False
     premium_expires_at: Optional[datetime] = None
+
+    # Soft delete (GDPR — keep deletion record so reports / moderation can resolve)
+    is_deleted: bool = False
+    deleted_at: Optional[datetime] = None
 
     # Social auth
     google_id: Optional[str] = None
@@ -100,10 +113,8 @@ class User(Document):
             "google_id",
             "apple_id",
             "facebook_id",
-            [
-                ("location.coordinates.latitude", 1),
-                ("location.coordinates.longitude", 1),
-            ],
+            "is_deleted",
+            [("location_geo", pymongo.GEOSPHERE)],
         ]
 
     def update_last_active(self):
@@ -115,3 +126,15 @@ class User(Document):
             if photo.is_primary:
                 return photo.url
         return self.photos[0].url if self.photos else None
+
+    def is_profile_complete(self) -> bool:
+        """Profile complete enough to appear in discovery."""
+        return (
+            len(self.photos) >= 1
+            and len(self.interests) >= 1
+            and bool(self.interests[0])
+            and self.gender != Gender.OTHER
+            and self.looking_for != Gender.OTHER
+            and self.location_geo is not None
+            and not self.is_deleted
+        )

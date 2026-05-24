@@ -16,9 +16,18 @@ from app.auth.schemas import (
 from app.auth.service import AuthService
 from app.auth.social import SocialAuthService
 from app.core.dependencies import get_current_user
+from app.core.rate_limit import ip_rate_limit, user_rate_limit
 from app.models.user import User
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
+
+# Rate limits — values aligned with config defaults
+_LOGIN_LIMIT = Depends(ip_rate_limit("login", max_requests=10, window_seconds=900))   # 10/15min
+_REGISTER_LIMIT = Depends(ip_rate_limit("register", max_requests=5, window_seconds=3600))  # 5/h
+_FORGOT_LIMIT = Depends(ip_rate_limit("forgot", max_requests=5, window_seconds=3600))     # 5/h
+_REFRESH_LIMIT = Depends(ip_rate_limit("refresh", max_requests=30, window_seconds=300))   # 30/5min
+_VERIFY_LIMIT = Depends(ip_rate_limit("verify", max_requests=10, window_seconds=600))     # 10/10min
+_RESEND_LIMIT = Depends(user_rate_limit("resend_verify", max_requests=3, window_seconds=3600))
 
 
 def format_user_response(user: User) -> dict:
@@ -58,7 +67,7 @@ def format_user_response(user: User) -> dict:
     }
 
 
-@router.post("/register", status_code=status.HTTP_201_CREATED)
+@router.post("/register", status_code=status.HTTP_201_CREATED, dependencies=[_REGISTER_LIMIT])
 async def register(data: RegisterRequest):
     """Register a new user account."""
     user, tokens = await AuthService.register(data)
@@ -113,7 +122,7 @@ async def upload_photo_for_registration(
     }
 
 
-@router.post("/login")
+@router.post("/login", dependencies=[_LOGIN_LIMIT])
 async def login(data: LoginRequest):
     """Authenticate user and return tokens."""
     user, tokens = await AuthService.login(
@@ -130,7 +139,7 @@ async def login(data: LoginRequest):
     }
 
 
-@router.post("/refresh")
+@router.post("/refresh", dependencies=[_REFRESH_LIMIT])
 async def refresh_token(data: RefreshTokenRequest):
     """Refresh access token using refresh token."""
     tokens = await AuthService.refresh_tokens(data.refresh_token)
@@ -147,7 +156,7 @@ async def logout(current_user: User = Depends(get_current_user)):
     return {"success": True, "message": "Successfully logged out"}
 
 
-@router.post("/forgot-password")
+@router.post("/forgot-password", dependencies=[_FORGOT_LIMIT])
 async def forgot_password(data: ForgotPasswordRequest):
     """Send password reset code to email."""
     await AuthService.forgot_password(data.email)
@@ -165,14 +174,14 @@ async def reset_password(data: ResetPasswordRequest):
     return {"success": True, "message": "Password successfully reset"}
 
 
-@router.post("/verify-email")
+@router.post("/verify-email", dependencies=[_VERIFY_LIMIT])
 async def verify_email(data: VerifyEmailRequest):
     """Verify user email with 6-digit code."""
     await AuthService.verify_email(email=data.email, code=data.code)
     return {"success": True, "message": "Email successfully verified"}
 
 
-@router.post("/resend-verification")
+@router.post("/resend-verification", dependencies=[_RESEND_LIMIT])
 async def resend_verification(current_user: User = Depends(get_current_user)):
     """Resend verification code to email."""
     await AuthService.resend_verification(str(current_user.id))

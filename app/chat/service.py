@@ -8,6 +8,7 @@ from app.models.match import Match
 from app.models.sticker import Sticker, StickerPack, UserStickerPack, RecentSticker
 from app.core.exceptions import NotFoundError, ForbiddenError, ValidationError
 from app.core.database import get_database
+from app.core.cache import online_tracker
 
 
 class ChatService:
@@ -16,6 +17,7 @@ class ChatService:
         user: User,
         limit: int = 20,
         offset: int = 0,
+        include_closed: bool = False,
     ) -> Tuple[List[dict], int]:
         """
         Get user's conversations.
@@ -28,13 +30,12 @@ class ChatService:
         user_id = str(user.id)
         db = get_database()
 
-        # Build the query filter
-        query = {
-            "$or": [
-                {"user1_id": user_id},
-                {"user2_id": user_id},
-            ]
+        # Build the query filter — exclude closed convos by default
+        query: Dict[str, Any] = {
+            "$or": [{"user1_id": user_id}, {"user2_id": user_id}],
         }
+        if not include_closed:
+            query["is_active"] = True
 
         # Get total count first (for pagination info)
         total = await Conversation.find(query).count()
@@ -72,15 +73,23 @@ class ChatService:
             if not other_user:
                 continue
 
-            # Build last message info from cached data
+            # Build last message info from cached data.
+            # Status: "read" iff the OTHER user has zero unread (they've seen it).
             last_message = None
             if conv.last_message_id:
+                if conv.last_message_sender_id == user_id:
+                    other_unread = conv.get_unread_count(
+                        conv.get_other_user_id(user_id)
+                    )
+                    status = "read" if other_unread == 0 else "delivered"
+                else:
+                    status = "delivered"
                 last_message = {
                     "id": conv.last_message_id,
                     "content": conv.last_message_content,
                     "sender_id": conv.last_message_sender_id,
                     "timestamp": conv.last_message_at.isoformat() if conv.last_message_at else None,
-                    "status": "delivered",
+                    "status": status,
                 }
 
             # Check mute status
@@ -107,14 +116,25 @@ class ChatService:
         return results, total
 
     @staticmethod
-    async def get_conversation(conversation_id: str, user: User) -> Conversation:
-        """Get a specific conversation."""
-        conv = await Conversation.get(conversation_id)
+    async def get_conversation(
+        conversation_id: str,
+        user: User,
+        require_active: bool = True,
+    ) -> Conversation:
+        """Get a specific conversation. By default refuses inactive convos
+        (block/unmatch/deleted_account) so messages can't be sent across them."""
+        try:
+            conv = await Conversation.get(conversation_id)
+        except Exception:
+            raise NotFoundError("Conversation not found")
         if not conv:
             raise NotFoundError("Conversation not found")
 
         if str(user.id) not in [conv.user1_id, conv.user2_id]:
             raise ForbiddenError("Not authorized")
+
+        if require_active and not conv.is_active:
+            raise ForbiddenError("This conversation is no longer active")
 
         return conv
 
@@ -125,15 +145,8 @@ class ChatService:
         limit: int = 50,
         before: Optional[str] = None,
     ) -> Tuple[List[Message], bool]:
-        """
-        Get messages in a conversation.
-
-        OPTIMIZED:
-        - Uses cursor-based pagination with _id (more efficient than timestamp)
-        - _id contains timestamp info and is indexed by default
-        - Eliminates extra query to fetch 'before' message
-        """
-        conv = await ChatService.get_conversation(conversation_id, user)
+        """Read messages — allowed even on inactive conversations (history)."""
+        conv = await ChatService.get_conversation(conversation_id, user, require_active=False)
 
         query: Dict[str, Any] = {
             "conversation_id": str(conv.id),
@@ -176,8 +189,21 @@ class ChatService:
         media_info: Optional[MediaInfo] = None,
         reply_to_id: Optional[str] = None,
     ) -> Message:
-        """Send a message in a conversation."""
-        conv = await ChatService.get_conversation(conversation_id, sender)
+        """Send a message. Rejects inactive conversations (block/unmatch)."""
+        conv = await ChatService.get_conversation(conversation_id, sender, require_active=True)
+
+        # Defensive: also reject if the underlying match is no longer active
+        # (e.g. one of the users blocked the other after the conversation was loaded)
+        match = await Match.find_one({"_id": ObjectId(conv.match_id)}) if ObjectId.is_valid(conv.match_id) else None
+        if match and not match.is_active:
+            raise ForbiddenError("This conversation is no longer active")
+
+        # Validate content
+        if message_type == MessageType.TEXT:
+            if not content or not content.strip():
+                raise ValidationError("Message cannot be empty")
+            if len(content) > 5000:
+                raise ValidationError("Message too long (max 5000 characters)")
 
         # Handle reply
         reply_to = None
@@ -189,9 +215,14 @@ class ChatService:
                     message_id=str(reply_msg.id),
                     sender_id=reply_msg.sender_id,
                     sender_name=reply_sender.name if reply_sender else "Unknown",
-                    content=reply_msg.content[:100],
+                    content=(reply_msg.content or "")[:100],
                     type=reply_msg.type,
                 )
+
+        # Status: DELIVERED if recipient is online (Redis presence), else SENT
+        other_id = conv.get_other_user_id(str(sender.id))
+        recipient_online = await online_tracker.is_online(other_id)
+        status = MessageStatus.DELIVERED if recipient_online else MessageStatus.SENT
 
         message = Message(
             conversation_id=str(conv.id),
@@ -205,7 +236,7 @@ class ChatService:
             sticker_id=sticker_id,
             media_info=media_info,
             reply_to=reply_to,
-            status=MessageStatus.SENT,
+            status=status,
         )
         await message.insert()
 
@@ -257,15 +288,28 @@ class ChatService:
         if message.type != MessageType.TEXT:
             raise ValidationError("Can only edit text messages")
 
-        # Check time limit (48 hours)
-        time_limit = datetime.now(timezone.utc) - timedelta(hours=48)
-        if message.timestamp < time_limit:
-            raise ValidationError("Cannot edit messages older than 48 hours")
+        if not new_content or not new_content.strip():
+            raise ValidationError("Message cannot be empty")
+        if len(new_content) > 5000:
+            raise ValidationError("Message too long (max 5000 characters)")
+
+        # Time limit (15 minutes — match common UX)
+        ts = message.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts < datetime.now(timezone.utc) - timedelta(minutes=15):
+            raise ValidationError("Cannot edit messages older than 15 minutes")
 
         message.content = new_content
         message.is_edited = True
         message.edited_at = datetime.now(timezone.utc)
         await message.save()
+
+        # If this is the latest message in the conversation, refresh the preview
+        conv = await Conversation.get(message.conversation_id)
+        if conv and conv.last_message_id == str(message.id):
+            conv.last_message_content = new_content[:100]
+            await conv.save()
 
         return message
 
@@ -275,7 +319,7 @@ class ChatService:
         user: User,
         for_everyone: bool = False,
     ) -> Message:
-        """Delete a message."""
+        """Delete a message (soft delete)."""
         message = await Message.get(message_id)
         if not message:
             raise NotFoundError("Message not found")
@@ -283,18 +327,16 @@ class ChatService:
         if message.sender_id != str(user.id):
             raise ForbiddenError("Can only delete your own messages")
 
-        if for_everyone:
-            # Soft delete - mark as deleted but keep record
-            message.is_deleted = True
-            message.deleted_at = datetime.now(timezone.utc)
-            message.content = "This message was deleted"
-            await message.save()
-        else:
-            # Hard delete for self only (not implemented - would need per-user visibility)
-            message.is_deleted = True
-            message.deleted_at = datetime.now(timezone.utc)
-            message.content = "This message was deleted"
-            await message.save()
+        message.is_deleted = True
+        message.deleted_at = datetime.now(timezone.utc)
+        message.content = "This message was deleted"
+        await message.save()
+
+        # Refresh conversation preview if this was the latest message
+        conv = await Conversation.get(message.conversation_id)
+        if conv and conv.last_message_id == str(message.id):
+            conv.last_message_content = "This message was deleted"
+            await conv.save()
 
         return message
 
@@ -418,53 +460,31 @@ class ChatService:
         conversation_id: str,
         user: User,
         message_ids: Optional[List[str]] = None,
-        mark_all: bool = False,
     ):
-        """
-        Mark messages as read.
-
-        OPTIMIZED:
-        - Supports marking all unread messages in one operation
-        - Uses bulk update with update_many for efficiency
-        - Single database operation instead of per-message updates
-
-        Args:
-            conversation_id: The conversation ID
-            user: The current user
-            message_ids: Optional list of specific message IDs to mark
-            mark_all: If True, marks ALL unread messages as read
-        """
-        conv = await ChatService.get_conversation(conversation_id, user)
+        """Mark messages as read. Empty/None message_ids = mark ALL unread."""
+        conv = await ChatService.get_conversation(conversation_id, user, require_active=False)
         user_id = str(user.id)
 
-        # Build base query - only messages from OTHER user that aren't already read
         query: Dict[str, Any] = {
             "conversation_id": str(conv.id),
             "sender_id": {"$ne": user_id},
-            "status": {"$ne": MessageStatus.READ.value}
+            "status": {"$ne": MessageStatus.READ.value},
         }
-
-        if not mark_all and message_ids:
-            # Mark specific messages
+        if message_ids:
             object_ids = [ObjectId(mid) for mid in message_ids if ObjectId.is_valid(mid)]
-            if object_ids:
-                query["_id"] = {"$in": object_ids}
-        elif not mark_all:
-            # No messages specified and not mark_all, nothing to do
-            return
+            if not object_ids:
+                return 0
+            query["_id"] = {"$in": object_ids}
 
-        # Bulk update all matching messages in one operation
         result = await Message.find(query).update_many({
             "$set": {
                 "status": MessageStatus.READ.value,
-                "read_at": datetime.now(timezone.utc)
+                "read_at": datetime.now(timezone.utc),
             }
         })
 
-        # Reset unread count
         conv.reset_unread(user_id)
         await conv.save()
-
         return result.modified_count if result else 0
 
     @staticmethod

@@ -16,11 +16,40 @@ jobs:
           username: ${{ secrets.EC2_USER }}
           key: ${{ secrets.EC2_SSH_KEY }}
           script: |
+            set -euo pipefail
             cd /home/ubuntu/flame_backend
-            git pull origin main
-            docker compose up -d --build app
+
+            # Remember the SHA we're running so we can roll back.
+            PREV_SHA=$(git rev-parse HEAD)
+            echo "Currently deployed: $PREV_SHA"
+
+            git fetch origin main
+            NEW_SHA=$(git rev-parse origin/main)
+            echo "Deploying:          $NEW_SHA"
+
+            git reset --hard "$NEW_SHA"
+
+            # Build and roll
+            docker compose build app
+            docker compose up -d app
+
+            # Health check (12 * 5s = 60s)
+            DEPLOY_OK=0
             for i in $(seq 1 12); do
-              curl -sf https://api.flame.banatalk.com/health && break
+              if curl -sf https://api.flame.banatalk.com/health > /dev/null; then
+                DEPLOY_OK=1
+                echo "Health check passed on attempt $i"
+                break
+              fi
               sleep 5
-            done || exit 1
+            done
+
+            if [ "$DEPLOY_OK" -ne 1 ]; then
+              echo "Health check FAILED — rolling back to $PREV_SHA"
+              git reset --hard "$PREV_SHA"
+              docker compose build app
+              docker compose up -d app
+              exit 1
+            fi
+
             docker image prune -f

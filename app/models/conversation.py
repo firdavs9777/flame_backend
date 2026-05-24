@@ -17,6 +17,10 @@ class Conversation(Document):
     user1_id: Annotated[str, Indexed()]
     user2_id: Annotated[str, Indexed()]
 
+    # Soft-delete — keep messages for abuse review / user-side history
+    is_active: bool = True
+    closed_reason: Optional[str] = None  # "unmatched" | "blocked" | "deleted_account"
+
     # Last message info for quick access
     last_message_id: Optional[str] = None
     last_message_content: Optional[str] = None
@@ -27,10 +31,8 @@ class Conversation(Document):
     user1_unread_count: int = 0
     user2_unread_count: int = 0
 
-    # Pinned messages (can have multiple like Telegram)
     pinned_messages: List[PinnedMessage] = Field(default_factory=list)
 
-    # Mute settings per user
     user1_muted_until: Optional[datetime] = None
     user2_muted_until: Optional[datetime] = None
 
@@ -43,8 +45,8 @@ class Conversation(Document):
             "match_id",
             "user1_id",
             "user2_id",
-            [("user1_id", 1), ("updated_at", -1)],
-            [("user2_id", 1), ("updated_at", -1)],
+            [("user1_id", 1), ("is_active", 1), ("updated_at", -1)],
+            [("user2_id", 1), ("is_active", 1), ("updated_at", -1)],
         ]
 
     def get_other_user_id(self, user_id: str) -> str:

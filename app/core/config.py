@@ -17,14 +17,14 @@ class Settings(BaseSettings):
     # JWT
     JWT_SECRET_KEY: str
     JWT_ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
 
-    # CORS
-    CORS_ORIGINS: List[str] = ["*"]
+    # CORS — never use ["*"] in production with credentials
+    CORS_ORIGINS: List[str] = []
 
     # Rate Limiting
     RATE_LIMIT_LOGIN: int = 5  # per 15 minutes
