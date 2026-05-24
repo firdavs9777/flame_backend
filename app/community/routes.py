@@ -33,6 +33,13 @@ router = APIRouter(tags=["Community"])
 
 
 # Helper functions
+def _is_profile_complete_check(user: User) -> bool:
+    has_photos = len(user.photos) > 0
+    has_interests = any(i.strip() for i in (user.interests or []))
+    has_location = user.location is not None and user.location.coordinates is not None
+    return has_photos and has_interests and has_location
+
+
 def format_full_user(user: User) -> dict:
     """Format user for full response."""
     location = None
@@ -68,6 +75,7 @@ def format_full_user(user: User) -> dict:
         "location": location,
         "is_online": user.is_online,
         "is_verified": user.is_verified,
+        "is_profile_complete": _is_profile_complete_check(user),
         "last_active": user.last_active.isoformat(),
         "created_at": user.created_at.isoformat(),
         "preferences": {

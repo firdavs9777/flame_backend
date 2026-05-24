@@ -30,6 +30,15 @@ _VERIFY_LIMIT = Depends(ip_rate_limit("verify", max_requests=10, window_seconds=
 _RESEND_LIMIT = Depends(user_rate_limit("resend_verify", max_requests=3, window_seconds=3600))
 
 
+def _is_profile_complete(user: User) -> bool:
+    """A profile is complete when the user has at least one photo,
+    real interests (not the social-auth placeholder), and a location."""
+    has_photos = len(user.photos) > 0
+    has_interests = any(i.strip() for i in (user.interests or []))
+    has_location = user.location is not None and user.location.coordinates is not None
+    return has_photos and has_interests and has_location
+
+
 def format_user_response(user: User) -> dict:
     """Format user object for response."""
     location = None
@@ -57,6 +66,7 @@ def format_user_response(user: User) -> dict:
         "location": location,
         "is_online": user.is_online,
         "is_verified": user.is_verified,
+        "is_profile_complete": _is_profile_complete(user),
         "last_active": user.last_active.isoformat(),
         "created_at": user.created_at.isoformat(),
         "preferences": {
