@@ -20,7 +20,7 @@ Deploy the Flame FastAPI backend to a single AWS EC2 instance using Docker Compo
 - **Type:** t3.small (2 vCPU, 2GB RAM)
 - **OS:** Ubuntu 22.04 LTS
 - **Elastic IP:** One static IP attached — survives instance restarts
-- **DNS:** User's existing domain A record → Elastic IP
+- **DNS:** `api.flame.banatalk.com` A record → Elastic IP (add alongside existing `api.banatalk.com`)
 
 ### Security Group
 | Port | Protocol | Source | Purpose |
@@ -79,7 +79,7 @@ Three containers on a shared internal Docker network:
 1. SSH into EC2 using stored private key
 2. `git pull origin main` on the server
 3. `docker compose up -d --build app` — rebuilds and restarts only the app container
-4. Health check: `curl -f https://<domain>/health` — fails the action if unhealthy
+4. Health check: `curl -f https://api.flame.banatalk.com/health` — fails the action if unhealthy
 
 Redis and Nginx containers are not touched on deploy.
 Downtime per deploy: ~5–10 seconds (container restart only).
