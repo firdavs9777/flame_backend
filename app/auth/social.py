@@ -166,20 +166,14 @@ class SocialAuthService:
         log = logging.getLogger(__name__)
         try:
             header = jwt.get_unverified_header(id_token)
-            unverified = jwt.get_unverified_claims(id_token)
-            log.warning("Google token: aud=%s iss=%s expected_aud=%s",
-                        unverified.get("aud"), unverified.get("iss"), settings.GOOGLE_CLIENT_ID)
-
             async with httpx.AsyncClient(timeout=5.0) as client:
                 response = await client.get("https://www.googleapis.com/oauth2/v3/certs")
                 if response.status_code != 200:
-                    log.warning("Google JWKs fetch failed: %s", response.status_code)
                     return None
                 keys = response.json().get("keys", [])
 
             key = next((k for k in keys if k.get("kid") == header.get("kid")), None)
             if not key:
-                log.warning("Google token kid not found in JWKs: %s", header.get("kid"))
                 return None
 
             payload = jwt.decode(
