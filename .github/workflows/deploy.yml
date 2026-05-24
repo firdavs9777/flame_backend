@@ -19,5 +19,8 @@ jobs:
             cd /home/ubuntu/flame_backend
             git pull origin main
             docker compose up -d --build app
-            sleep 8
-            curl -sf https://api.flame.banatalk.com/health || exit 1
+            for i in $(seq 1 12); do
+              curl -sf https://api.flame.banatalk.com/health && break
+              sleep 5
+            done || exit 1
+            docker image prune -f
