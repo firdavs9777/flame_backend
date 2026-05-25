@@ -16,7 +16,8 @@ from app.auth.schemas import (
 from app.auth.service import AuthService
 from app.auth.social import SocialAuthService
 from app.core.dependencies import get_current_user
-from app.core.rate_limit import ip_rate_limit, user_rate_limit
+from app.core.profile import is_profile_complete
+from app.core.rate_limit import email_rate_limit, ip_rate_limit, user_rate_limit
 from app.models.user import User
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -28,15 +29,9 @@ _FORGOT_LIMIT = Depends(ip_rate_limit("forgot", max_requests=5, window_seconds=3
 _REFRESH_LIMIT = Depends(ip_rate_limit("refresh", max_requests=30, window_seconds=300))   # 30/5min
 _VERIFY_LIMIT = Depends(ip_rate_limit("verify", max_requests=10, window_seconds=600))     # 10/10min
 _RESEND_LIMIT = Depends(user_rate_limit("resend_verify", max_requests=3, window_seconds=3600))
-
-
-def _is_profile_complete(user: User) -> bool:
-    """A profile is complete when the user has at least one photo,
-    real interests (not the social-auth placeholder), and a location."""
-    has_photos = len(user.photos) > 0
-    has_interests = any(i.strip() for i in (user.interests or []))
-    has_location = user.location is not None and user.location.coordinates is not None
-    return has_photos and has_interests and has_location
+_UPLOAD_PHOTO_LIMIT = Depends(ip_rate_limit("upload_photo", max_requests=10, window_seconds=3600))  # 10/h per IP
+_LOGIN_EMAIL_LIMIT = Depends(email_rate_limit("login_email", max_requests=10, window_seconds=900))
+_FORGOT_EMAIL_LIMIT = Depends(email_rate_limit("forgot_email", max_requests=5, window_seconds=3600))
 
 
 def format_user_response(user: User) -> dict:
@@ -66,9 +61,9 @@ def format_user_response(user: User) -> dict:
         "location": location,
         "is_online": user.is_online,
         "is_verified": user.is_verified,
-        "is_profile_complete": _is_profile_complete(user),
-        "last_active": user.last_active.isoformat(),
-        "created_at": user.created_at.isoformat(),
+        "is_profile_complete": is_profile_complete(user),
+        "last_active": user.last_active.isoformat() if user.last_active else None,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
         "preferences": {
             "min_age": user.preferences.min_age,
             "max_age": user.preferences.max_age,
@@ -94,7 +89,7 @@ ALLOWED_PHOTO_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
 MAX_REGISTRATION_PHOTO_SIZE = 10 * 1024 * 1024  # 10MB
 
 
-@router.post("/upload-photo", status_code=status.HTTP_201_CREATED)
+@router.post("/upload-photo", status_code=status.HTTP_201_CREATED, dependencies=[_UPLOAD_PHOTO_LIMIT])
 async def upload_photo_for_registration(
     photo: UploadFile = File(...),
     is_primary: bool = False,
@@ -132,7 +127,7 @@ async def upload_photo_for_registration(
     }
 
 
-@router.post("/login", dependencies=[_LOGIN_LIMIT])
+@router.post("/login", dependencies=[_LOGIN_LIMIT, _LOGIN_EMAIL_LIMIT])
 async def login(data: LoginRequest):
     """Authenticate user and return tokens."""
     user, tokens = await AuthService.login(
@@ -171,7 +166,7 @@ async def logout(
     return {"success": True, "message": "Successfully logged out"}
 
 
-@router.post("/forgot-password", dependencies=[_FORGOT_LIMIT])
+@router.post("/forgot-password", dependencies=[_FORGOT_LIMIT, _FORGOT_EMAIL_LIMIT])
 async def forgot_password(data: ForgotPasswordRequest):
     """Send password reset code to email."""
     await AuthService.forgot_password(data.email)

@@ -167,7 +167,9 @@ class SocialAuthService:
                     looking_for=Gender.OTHER,
                     interests=[""],
                     facebook_id=facebook_id,
-                    is_verified=bool(email),
+                    # Facebook does not strongly assert email ownership — require
+                    # explicit verification through our own flow before trusting.
+                    is_verified=False,
                 )
                 await user.insert()
 
@@ -189,11 +191,27 @@ class SocialAuthService:
         log = logging.getLogger(__name__)
         try:
             header = jwt.get_unverified_header(id_token)
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                response = await client.get("https://www.googleapis.com/oauth2/v3/certs")
-                if response.status_code != 200:
-                    return None
-                keys = response.json().get("keys", [])
+
+            # Cache Google's JWKS in Redis for 1 hour so we don't hit Google on
+            # every sign-in attempt (saves ~100-300ms per login).
+            from app.core.cache import cache
+            import json as _json
+            keys = None
+            cached_keys = await cache.get("google_jwks") if cache.is_connected() else None
+            if cached_keys:
+                try:
+                    keys = _json.loads(cached_keys)
+                except Exception:
+                    keys = None
+
+            if keys is None:
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    response = await client.get("https://www.googleapis.com/oauth2/v3/certs")
+                    if response.status_code != 200:
+                        return None
+                    keys = response.json().get("keys", [])
+                if cache.is_connected():
+                    await cache.set("google_jwks", _json.dumps(keys), ttl=3600)
 
             key = next((k for k in keys if k.get("kid") == header.get("kid")), None)
             if not key:

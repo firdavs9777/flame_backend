@@ -37,6 +37,7 @@ def create_access_token(subject: str, expires_delta: Optional[timedelta] = None)
         "type": "access",
         "iat": datetime.now(timezone.utc),
         "jti": _jti(),
+        "iss": settings.APP_NAME,
     }
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
@@ -51,6 +52,7 @@ def create_refresh_token(subject: str) -> str:
         "type": "refresh",
         "iat": datetime.now(timezone.utc),
         "jti": secrets.token_urlsafe(32),  # Unique token ID
+        "iss": settings.APP_NAME,
     }
     return jwt.encode(to_encode, settings.JWT_SECRET_KEY, algorithm=settings.JWT_ALGORITHM)
 
@@ -59,7 +61,10 @@ def decode_token(token: str) -> Optional[dict[str, Any]]:
     """Decode and validate a JWT token."""
     try:
         payload = jwt.decode(
-            token, settings.JWT_SECRET_KEY, algorithms=[settings.JWT_ALGORITHM]
+            token,
+            settings.JWT_SECRET_KEY,
+            algorithms=[settings.JWT_ALGORITHM],
+            issuer=settings.APP_NAME,
         )
         return payload
     except JWTError:
@@ -67,13 +72,13 @@ def decode_token(token: str) -> Optional[dict[str, Any]]:
 
 
 def generate_verification_code() -> str:
-    """Generate a 6-digit verification code."""
-    return str(secrets.randbelow(900000) + 100000)
+    """Generate a 6-digit verification code (with leading zeros allowed)."""
+    return f"{secrets.randbelow(1000000):06d}"
 
 
 def generate_password_reset_code() -> str:
-    """Generate a 6-digit password reset code."""
-    return str(secrets.randbelow(900000) + 100000)
+    """Generate a 6-digit password reset code (with leading zeros allowed)."""
+    return f"{secrets.randbelow(1000000):06d}"
 
 
 def generate_verification_token() -> str:

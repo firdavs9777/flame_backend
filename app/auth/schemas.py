@@ -57,6 +57,14 @@ class RegisterRequest(BaseModel):
             raise ValueError("Password must contain at least one number")
         return v
 
+    @field_validator("interests")
+    @classmethod
+    def validate_interests(cls, v: List[str]) -> List[str]:
+        cleaned = [i.strip() for i in v if i and i.strip()]
+        if not cleaned:
+            raise ValueError("At least one non-empty interest is required")
+        return cleaned
+
 
 class LoginRequest(BaseModel):
     email: EmailStr

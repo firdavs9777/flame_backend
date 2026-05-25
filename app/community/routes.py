@@ -1,6 +1,7 @@
 from fastapi import APIRouter, Depends, UploadFile, File, Query, status, BackgroundTasks
 from typing import Optional, List
 from app.core.dependencies import get_current_user
+from app.core.profile import is_profile_complete
 from app.core.rate_limit import user_rate_limit
 from app.models.user import User
 
@@ -33,13 +34,6 @@ router = APIRouter(tags=["Community"])
 
 
 # Helper functions
-def _is_profile_complete_check(user: User) -> bool:
-    has_photos = len(user.photos) > 0
-    has_interests = any(i.strip() for i in (user.interests or []))
-    has_location = user.location is not None and user.location.coordinates is not None
-    return has_photos and has_interests and has_location
-
-
 def format_full_user(user: User) -> dict:
     """Format user for full response."""
     location = None
@@ -75,9 +69,9 @@ def format_full_user(user: User) -> dict:
         "location": location,
         "is_online": user.is_online,
         "is_verified": user.is_verified,
-        "is_profile_complete": _is_profile_complete_check(user),
-        "last_active": user.last_active.isoformat(),
-        "created_at": user.created_at.isoformat(),
+        "is_profile_complete": is_profile_complete(user),
+        "last_active": user.last_active.isoformat() if user.last_active else None,
+        "created_at": user.created_at.isoformat() if user.created_at else None,
         "preferences": {
             "min_age": user.preferences.min_age,
             "max_age": user.preferences.max_age,
@@ -115,7 +109,7 @@ def format_public_user(user: User, distance: Optional[float] = None, common_inte
         "location": location_str,
         "distance": round(distance, 1) if (distance is not None and show_distance) else None,
         "is_online": user.is_online if show_online else False,
-        "last_active": user.last_active.isoformat() if show_online else None,
+        "last_active": user.last_active.isoformat() if (show_online and user.last_active) else None,
         "common_interests": common_interests,
     }
 
@@ -485,7 +479,7 @@ async def get_matches(
                         "age": r["other_user"].age,
                         "photos": [p.url for p in r["other_user"].photos],
                         "is_online": r["other_user"].is_online,
-                        "last_active": r["other_user"].last_active.isoformat(),
+                        "last_active": r["other_user"].last_active.isoformat() if r["other_user"].last_active else None,
                     },
                     "matched_at": r["match"].matched_at.isoformat(),
                     "is_new": r["is_new"],

@@ -352,6 +352,7 @@ class RateLimiter:
             True if rate limited, False if allowed
         """
         if not self.cache.is_connected():
+            # Caller is expected to log a warning when fail-open kicks in.
             return False  # Allow if Redis is down
 
         try:
@@ -362,7 +363,11 @@ class RateLimiter:
                 await self.cache.expire(key, window_seconds)
 
             return count > max_requests
-        except Exception:
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Rate limit check failed for key=%s (allowing request): %s", key, e
+            )
             return False
 
     async def get_remaining(

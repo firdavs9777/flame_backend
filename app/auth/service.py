@@ -230,8 +230,8 @@ class AuthService:
         from app.core.email import email_service
 
         user = await User.find_one(User.email == email)
-        if not user:
-            # Don't reveal if email exists
+        if not user or not user.password_hash:
+            # Don't reveal if email exists or if account is social-only
             return
 
         reset_token = generate_password_reset_token()
@@ -357,6 +357,9 @@ class AuthService:
         """Change user password."""
         if new_password != new_password_confirmation:
             raise ValidationError("Passwords do not match")
+
+        if current_password == new_password:
+            raise ValidationError("New password must be different from current password")
 
         user = await User.get(user_id)
         if not user:
