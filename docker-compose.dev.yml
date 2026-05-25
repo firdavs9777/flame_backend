@@ -1,0 +1,34 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"   # exposed to host for tools like RedisInsight
+    volumes:
+      - redis_data_dev:/data
+    networks:
+      - internal
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    env_file: .env.local
+    ports:
+      - "8000:8000"   # exposed directly — no nginx in dev
+    volumes:
+      - ./app:/app/app   # hot reload: code changes reflect immediately
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - internal
+
+networks:
+  internal:
+
+volumes:
+  redis_data_dev:
