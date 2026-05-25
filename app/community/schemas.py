@@ -82,6 +82,8 @@ class PublicUserResponse(BaseModel):
 
 class UpdateProfileRequest(StrictModel):
     name: Optional[str] = Field(default=None, min_length=2, max_length=50)
+    age: Optional[int] = Field(default=None, ge=18, le=100)
+    gender: Optional[Gender] = None
     bio: Optional[str] = Field(default=None, max_length=500)
     interests: Optional[List[str]] = Field(default=None, min_length=1, max_length=10)
     looking_for: Optional[Gender] = None

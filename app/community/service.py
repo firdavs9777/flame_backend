@@ -42,7 +42,7 @@ class UserService:
     @staticmethod
     async def update_profile(user: User, data: dict) -> User:
         """Update user profile — schema-bounded fields only."""
-        allowed = {"name", "bio", "interests", "looking_for"}
+        allowed = {"name", "age", "gender", "bio", "interests", "looking_for"}
         for key, value in data.items():
             if key in allowed and value is not None:
                 setattr(user, key, value)
