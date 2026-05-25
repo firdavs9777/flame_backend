@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, status, UploadFile, File
+from fastapi import APIRouter, Depends, status, UploadFile, File, Request
 import uuid
 from app.auth.schemas import (
     RegisterRequest,
@@ -160,9 +160,14 @@ async def refresh_token(data: RefreshTokenRequest):
 
 
 @router.post("/logout")
-async def logout(current_user: User = Depends(get_current_user)):
+async def logout(
+    request: Request,
+    current_user: User = Depends(get_current_user),
+):
     """Logout current user."""
-    await AuthService.logout(str(current_user.id))
+    auth_header = request.headers.get("authorization", "")
+    access_token = auth_header[7:] if auth_header.startswith("Bearer ") else None
+    await AuthService.logout(str(current_user.id), access_token=access_token)
     return {"success": True, "message": "Successfully logged out"}
 
 

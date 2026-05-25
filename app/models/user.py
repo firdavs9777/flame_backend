@@ -86,6 +86,7 @@ class User(Document):
     # Auth related
     verification_code: Optional[str] = None
     verification_code_expires: Optional[datetime] = None
+    verification_attempts: int = 0
     password_reset_token: Optional[str] = None
     password_reset_token_expires: Optional[datetime] = None
 

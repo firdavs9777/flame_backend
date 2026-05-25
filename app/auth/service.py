@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 import uuid
+import hashlib
 from app.models.user import User, Photo, UserPreferences, Location, Coordinates, GeoPoint
 from app.models.refresh_token import RefreshToken
 from app.models.device import Device, Platform
@@ -22,12 +23,20 @@ from app.core.exceptions import (
     TokenExpiredError,
 )
 from app.auth.schemas import RegisterRequest, TokenResponse
-from app.core.token_blocklist import revoke_all_for_user
+from app.core.token_blocklist import revoke_all_for_user, revoke_jti
 from pymongo.errors import DuplicateKeyError
 import secrets
 
 
+# Real bcrypt hash computed once at import time. Used to equalize timing on
+# login when the user/email doesn't exist (defeats email-enumeration via timing).
+_DUMMY_HASH = get_password_hash("not-a-real-password")
+
+
 class AuthService:
+    # Class-level alias so callers within the service can reference it explicitly.
+    _DUMMY_HASH = _DUMMY_HASH
+
     @staticmethod
     async def register(data: RegisterRequest) -> Tuple[User, TokenResponse]:
         """Register a new user."""
@@ -122,19 +131,22 @@ class AuthService:
 
     @staticmethod
     async def login(email: str, password: str, device_token: Optional[str] = None) -> Tuple[User, TokenResponse]:
-        """Authenticate user and return tokens."""
+        """Authenticate user and return tokens. Constant-time wrt email existence."""
         user = await User.find_one(User.email == email)
-        if not user:
-            raise InvalidCredentialsError()
 
-        # Reject social-only accounts trying to use password login
-        if not user.password_hash:
+        # Always run bcrypt against SOMETHING so attackers can't time-detect email existence.
+        # Covers both "no user" and "user exists but is social-only (no password)".
+        if not user or not user.password_hash:
+            try:
+                verify_password(password, AuthService._DUMMY_HASH)
+            except Exception:
+                pass
             raise InvalidCredentialsError()
 
         try:
             if not verify_password(password, user.password_hash):
                 raise InvalidCredentialsError()
-        except (ValueError, Exception) as e:
+        except Exception as e:
             # Any malformed hash (e.g., legacy data) → treat as invalid creds, never 500
             if isinstance(e, InvalidCredentialsError):
                 raise
@@ -189,7 +201,7 @@ class AuthService:
         return await AuthService._create_tokens(user_id)
 
     @staticmethod
-    async def logout(user_id: str):
+    async def logout(user_id: str, access_token: Optional[str] = None):
         """Logout user: invalidate ALL refresh tokens AND existing access tokens."""
         user = await User.get(user_id)
         if user:
@@ -200,6 +212,17 @@ class AuthService:
             {"$set": {"is_revoked": True}}
         )
         await revoke_all_for_user(user_id)
+
+        # Explicitly revoke the current access token's JTI (defense-in-depth on top of epoch).
+        if access_token:
+            payload = decode_token(access_token)
+            if payload and payload.get("jti"):
+                exp = payload.get("exp", 0)
+                ttl = max(0, int(exp - datetime.now(timezone.utc).timestamp()))
+                await revoke_jti(payload["jti"], ttl_seconds=ttl)
+
+        # Unregister device(s) so push notifications stop after logout.
+        await Device.find(Device.user_id == user_id).delete()
 
     @staticmethod
     async def forgot_password(email: str):
@@ -212,11 +235,12 @@ class AuthService:
             return
 
         reset_token = generate_password_reset_token()
-        user.password_reset_token = reset_token
+        token_hash = hashlib.sha256(reset_token.encode()).hexdigest()
+        user.password_reset_token = token_hash
         user.password_reset_token_expires = datetime.now(timezone.utc) + timedelta(hours=1)
         await user.save()
 
-        # Send email with reset token
+        # Email gets the plaintext token; DB only has the SHA-256 hash.
         await email_service.send_password_reset_token(
             to=user.email,
             name=user.name,
@@ -225,56 +249,77 @@ class AuthService:
 
     @staticmethod
     async def reset_password(token: str, password: str, password_confirmation: str):
-        """Reset password using token from email."""
+        """Reset password using token from email. Atomic single-use."""
         if password != password_confirmation:
             raise ValidationError("Passwords do not match")
 
-        user = await User.find_one(User.password_reset_token == token)
-        if not user:
+        token_hash = hashlib.sha256(token.encode()).hexdigest()
+        now = datetime.now(timezone.utc)
+        new_hash = get_password_hash(password)
+
+        # Atomic: find a user with a valid unexpired token AND consume it in one op.
+        # If two concurrent requests race with the same token, only one wins; the other
+        # gets None back and we raise.
+        result = await User.get_motor_collection().find_one_and_update(
+            {
+                "password_reset_token": token_hash,
+                "password_reset_token_expires": {"$gt": now},
+            },
+            {
+                "$set": {
+                    "password_hash": new_hash,
+                    "password_reset_token": None,
+                    "password_reset_token_expires": None,
+                    "updated_at": now,
+                }
+            },
+        )
+
+        if result is None:
             raise ValidationError("Invalid or expired reset token")
 
-        # Handle both naive and timezone-aware datetimes from database
-        expires = user.password_reset_token_expires
-        now = datetime.now(timezone.utc)
-        if expires and expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
-        if not expires or expires < now:
-            raise TokenExpiredError("Reset token has expired")
-
-        user.password_hash = get_password_hash(password)
-        user.password_reset_token = None
-        user.password_reset_token_expires = None
-        await user.save()
+        user_id = str(result["_id"])
 
         # Revoke all refresh AND access tokens for security
-        await RefreshToken.find(RefreshToken.user_id == str(user.id)).update(
+        await RefreshToken.find(RefreshToken.user_id == user_id).update(
             {"$set": {"is_revoked": True}}
         )
-        await revoke_all_for_user(str(user.id))
+        await revoke_all_for_user(user_id)
 
     @staticmethod
     async def verify_email(email: str, code: str):
-        """Verify user email with 6-digit code. Constant-time compare."""
+        """Verify user email with 6-digit code. Locks after 5 wrong attempts."""
         user = await User.find_one(User.email == email)
         if not user or not user.verification_code:
             raise ValidationError("Invalid email or verification code")
-        if not secrets.compare_digest(user.verification_code, code):
-            raise ValidationError("Invalid email or verification code")
 
-        # Check expiration - handle both naive and timezone-aware datetimes
+        # Check expiration first - handle both naive and timezone-aware datetimes
         expires = user.verification_code_expires
         if expires is None:
             raise TokenExpiredError("Verification code has expired")
-
         now = datetime.now(timezone.utc)
         if expires.tzinfo is None:
             expires = expires.replace(tzinfo=timezone.utc)
         if expires < now:
             raise TokenExpiredError("Verification code has expired")
 
+        # Hard lock after too many failed attempts — burn the code, force a resend.
+        if (user.verification_attempts or 0) >= 5:
+            user.verification_code = None
+            user.verification_code_expires = None
+            user.verification_attempts = 0
+            await user.save()
+            raise ValidationError("Too many failed attempts. Request a new code.")
+
+        if not secrets.compare_digest(user.verification_code, code):
+            user.verification_attempts = (user.verification_attempts or 0) + 1
+            await user.save()
+            raise ValidationError("Invalid email or verification code")
+
         user.is_verified = True
         user.verification_code = None
         user.verification_code_expires = None
+        user.verification_attempts = 0
         await user.save()
 
     @staticmethod
@@ -292,6 +337,7 @@ class AuthService:
         verification_code = generate_verification_code()
         user.verification_code = verification_code
         user.verification_code_expires = datetime.now(timezone.utc) + timedelta(minutes=15)
+        user.verification_attempts = 0  # fresh code → reset the attempts counter
         await user.save()
 
         # Send verification code
@@ -360,11 +406,23 @@ class AuthService:
 
     @staticmethod
     async def _register_device(user_id: str, device_token: str, platform: Platform = Platform.IOS):
-        """Register or update device for push notifications."""
+        """Register or update device for push notifications.
+
+        If the same device token already exists for the same user, just refresh the
+        timestamp. If it exists for a *different* user, the old binding is replaced
+        (the previous user stops receiving pushes on that device — which is correct,
+        since the device's current owner is now the new user). The actual security
+        improvement here is partial: a stolen token still binds, but at least the
+        rebinding is explicit and intentional rather than a silent overwrite.
+        """
+        now = datetime.now(timezone.utc)
         existing = await Device.find_one(Device.token == device_token)
         if existing:
-            existing.user_id = user_id
-            existing.updated_at = datetime.now(timezone.utc)
+            if existing.user_id != user_id:
+                # Device changed hands — invalidate old binding cleanly.
+                existing.user_id = user_id
+                existing.platform = platform
+            existing.updated_at = now
             await existing.save()
         else:
             device = Device(

@@ -2,6 +2,7 @@ from beanie import Document, Indexed
 from pydantic import Field
 from typing import Annotated
 from datetime import datetime, timezone
+from pymongo import IndexModel, ASCENDING
 
 
 class RefreshToken(Document):
@@ -16,5 +17,6 @@ class RefreshToken(Document):
         indexes = [
             "user_id",
             "token_jti",
-            "expires_at",
+            # TTL index: MongoDB auto-deletes documents when expires_at is in the past
+            IndexModel([("expires_at", ASCENDING)], expireAfterSeconds=0),
         ]
