@@ -28,11 +28,20 @@ class SocialAuthService:
         # Find or create user
         user = await User.find_one(User.google_id == google_id)
         if not user:
-            user = await User.find_one(User.email == email)
-            if user:
-                # Link Google account to existing user
-                user.google_id = google_id
-                await user.save()
+            existing = await User.find_one(User.email == email)
+            if existing:
+                # Block auto-linking to password-based accounts — prevents takeover
+                if existing.password_hash and existing.password_hash != "":
+                    raise InvalidCredentialsError(
+                        "An account with this email already exists. "
+                        "Sign in with your password to link Google."
+                    )
+                # Only auto-link to other social accounts or unfinished social signups
+                if not google_user.get("email_verified"):
+                    raise InvalidCredentialsError("Google email is not verified")
+                existing.google_id = google_id
+                await existing.save()
+                user = existing
             else:
                 # Create new user (will need to complete profile)
                 user = User(
@@ -80,11 +89,18 @@ class SocialAuthService:
         # Find or create user
         user = await User.find_one(User.apple_id == apple_id)
         if not user:
+            existing = None
             if email:
-                user = await User.find_one(User.email == email)
-            if user:
-                user.apple_id = apple_id
-                await user.save()
+                existing = await User.find_one(User.email == email)
+            if existing:
+                if existing.password_hash and existing.password_hash != "":
+                    raise InvalidCredentialsError(
+                        "An account with this email already exists. "
+                        "Sign in with your password to link Apple."
+                    )
+                existing.apple_id = apple_id
+                await existing.save()
+                user = existing
             else:
                 # Create new user
                 user = User(
@@ -129,11 +145,18 @@ class SocialAuthService:
         # Find or create user
         user = await User.find_one(User.facebook_id == facebook_id)
         if not user:
+            existing = None
             if email:
-                user = await User.find_one(User.email == email)
-            if user:
-                user.facebook_id = facebook_id
-                await user.save()
+                existing = await User.find_one(User.email == email)
+            if existing:
+                if existing.password_hash and existing.password_hash != "":
+                    raise InvalidCredentialsError(
+                        "An account with this email already exists. "
+                        "Sign in with your password to link Facebook."
+                    )
+                existing.facebook_id = facebook_id
+                await existing.save()
+                user = existing
             else:
                 user = User(
                     email=email or f"{facebook_id}@facebook.com",

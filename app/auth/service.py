@@ -23,6 +23,7 @@ from app.core.exceptions import (
 )
 from app.auth.schemas import RegisterRequest, TokenResponse
 from app.core.token_blocklist import revoke_all_for_user
+from pymongo.errors import DuplicateKeyError
 import secrets
 
 
@@ -101,7 +102,10 @@ class AuthService:
             verification_code_expires=datetime.now(timezone.utc) + timedelta(minutes=15),
         )
 
-        await user.insert()
+        try:
+            await user.insert()
+        except DuplicateKeyError:
+            raise EmailExistsError()
 
         # Send verification email with 6-digit code
         from app.core.email import email_service
@@ -123,7 +127,17 @@ class AuthService:
         if not user:
             raise InvalidCredentialsError()
 
-        if not verify_password(password, user.password_hash):
+        # Reject social-only accounts trying to use password login
+        if not user.password_hash:
+            raise InvalidCredentialsError()
+
+        try:
+            if not verify_password(password, user.password_hash):
+                raise InvalidCredentialsError()
+        except (ValueError, Exception) as e:
+            # Any malformed hash (e.g., legacy data) → treat as invalid creds, never 500
+            if isinstance(e, InvalidCredentialsError):
+                raise
             raise InvalidCredentialsError()
 
         # Update online status
@@ -142,7 +156,7 @@ class AuthService:
 
     @staticmethod
     async def refresh_tokens(refresh_token: str) -> TokenResponse:
-        """Refresh access token using refresh token."""
+        """Refresh access token using refresh token. Atomic + detects token reuse."""
         payload = decode_token(refresh_token)
         if not payload:
             raise InvalidCredentialsError("Invalid refresh token")
@@ -154,18 +168,24 @@ class AuthService:
         if not jti:
             raise InvalidCredentialsError("Invalid refresh token")
 
-        # Check if token is revoked
-        token_record = await RefreshToken.find_one(RefreshToken.token_jti == jti)
-        if not token_record or token_record.is_revoked:
+        # Atomic compare-and-swap: only one concurrent request wins
+        result = await RefreshToken.get_motor_collection().find_one_and_update(
+            {"token_jti": jti, "is_revoked": False},
+            {"$set": {"is_revoked": True}},
+        )
+
+        if result is None:
+            # Either unknown jti or already revoked → possible token theft
+            existing = await RefreshToken.find_one(RefreshToken.token_jti == jti)
+            if existing and existing.is_revoked:
+                # Revoke entire token family for this user
+                await RefreshToken.find(RefreshToken.user_id == existing.user_id).update(
+                    {"$set": {"is_revoked": True}}
+                )
+                await revoke_all_for_user(existing.user_id)
             raise InvalidCredentialsError("Token has been revoked")
 
-        # Revoke old token
-        token_record.is_revoked = True
-        await token_record.save()
-
         user_id = payload.get("sub")
-
-        # Create new tokens
         return await AuthService._create_tokens(user_id)
 
     @staticmethod
@@ -296,7 +316,15 @@ class AuthService:
         if not user:
             raise NotFoundError("User not found")
 
-        if not verify_password(current_password, user.password_hash):
+        if not user.password_hash:
+            raise ValidationError("This account uses social sign-in. Set a password via password reset first.")
+
+        try:
+            if not verify_password(current_password, user.password_hash):
+                raise InvalidCredentialsError("Current password is incorrect")
+        except Exception as e:
+            if isinstance(e, (InvalidCredentialsError, ValidationError)):
+                raise
             raise InvalidCredentialsError("Current password is incorrect")
 
         user.password_hash = get_password_hash(new_password)

@@ -38,8 +38,9 @@ async def revoke_all_for_user(user_id: str) -> None:
 
 
 async def user_token_revoked(user_id: str, issued_at: Optional[float]) -> bool:
-    if not issued_at:
-        return False
+    """Return True if a token issued at `issued_at` for `user_id` is revoked."""
+    if issued_at is None:
+        return True  # missing iat — treat as revoked (strict)
     val = await cache.get(_user_epoch_key(user_id))
     if not val:
         return False
@@ -47,4 +48,4 @@ async def user_token_revoked(user_id: str, issued_at: Optional[float]) -> bool:
         epoch = int(val)
     except ValueError:
         return False
-    return issued_at < epoch
+    return issued_at <= epoch
